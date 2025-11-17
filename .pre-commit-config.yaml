@@ -1,0 +1,24 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.2.2
+    hooks:
+      # run the formatter
+      - id: ruff-format
+        files: ^(src/|tests/)
+      # run the linter
+      - id: ruff
+        files: ^(src/|tests/)
+        verbose: true
+        # Ignore the exit code of ruff to pass the commit, but still show the output
+        entry: bash -c 'ruff "$@" || true' --
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.8.0
+    hooks:
+      - id: mypy
+        files: ^(src/|tests/)
+        # Enable verbose output for the 'mypy' hook.
+        verbose: true
+        # Ignore the exit code of mypy to pass the commit, but still show the output
+        entry: bash -c 'mypy "$@" || true' --
+

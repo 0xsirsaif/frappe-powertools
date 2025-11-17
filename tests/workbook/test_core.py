@@ -23,11 +23,11 @@ class SampleRow(BaseModel):
 
 class TestWorkbookConfig:
     """Test WorkbookConfig dataclass."""
-    
+
     def test_workbook_config_defaults(self):
         """Test that WorkbookConfig has sensible defaults."""
         config = WorkbookConfig()
-        
+
         assert config.format == TabularFormat.auto
         assert config.header_row == 1
         assert config.data_row_start == 2  # Should be header_row + 1
@@ -36,26 +36,26 @@ class TestWorkbookConfig:
         assert config.extra == "ignore"
         assert config.stop_on_first_error is False
         assert config.max_rows is None
-    
+
     def test_data_row_start_derived_correctly_when_none(self):
         """Test that data_row_start is correctly derived from header_row when None."""
         config = WorkbookConfig(header_row=3)
         assert config.data_row_start == 4  # header_row + 1
-        
+
         # Explicit data_row_start should not be overridden
         config2 = WorkbookConfig(header_row=3, data_row_start=5)
         assert config2.data_row_start == 5
-    
+
     def test_workbook_config_validation(self):
         """Test WorkbookConfig validation rules."""
         # header_row must be >= 1
         with pytest.raises(ValueError, match="header_row must be >= 1"):
             WorkbookConfig(header_row=0)
-        
+
         # data_row_start must be >= header_row
         with pytest.raises(ValueError, match="data_row_start must be >= header_row"):
             WorkbookConfig(header_row=5, data_row_start=3)
-        
+
         # max_rows must be >= 1
         with pytest.raises(ValueError, match="max_rows must be >= 1"):
             WorkbookConfig(max_rows=0)
@@ -63,80 +63,76 @@ class TestWorkbookConfig:
 
 class TestRowResult:
     """Test RowResult dataclass."""
-    
+
     def test_row_result_valid(self):
         """Test RowResult for a valid row."""
         context = RowContext(row_index=2, raw={"name": "Alice", "age": 30})
         model = SampleRow(name="Alice", age=30)
         result = RowResult(context=context, model=model, error=None)
-        
+
         assert result.is_valid
         assert result.model == model
         assert result.error is None
         assert result.context.row_index == 2
-    
+
     def test_row_result_invalid(self):
         """Test RowResult for an invalid row."""
         context = RowContext(row_index=3, raw={"name": "Bob", "age": "invalid"})
-        
+
         # Create a validation error
         error = None
         try:
             SampleRow(name="Bob", age="invalid")
         except ValidationError as e:
             error = e
-        
+
         result = RowResult(context=context, model=None, error=error)
-        
+
         assert not result.is_valid
         assert result.model is None
         assert result.error is not None
         assert isinstance(result.error, ValidationError)
-    
+
     def test_row_result_is_valid_property(self):
         """Test the is_valid property logic."""
         context = RowContext(row_index=1, raw={})
-        
+
         # Both model and no error = valid
         result1 = RowResult(context=context, model=SampleRow(name="Test", age=25), error=None)
         assert result1.is_valid
-        
+
         # No model but error = invalid
         try:
             SampleRow(age="invalid")
         except ValidationError as e:
             result2 = RowResult(context=context, model=None, error=e)
         assert not result2.is_valid
-        
+
         # Edge case: model but also error = invalid
         try:
             SampleRow(name="Test", age="bad")
         except ValidationError as e:
-            result3 = RowResult(
-                context=context, 
-                model=SampleRow(name="Test", age=25), 
-                error=e
-            )
+            result3 = RowResult(context=context, model=SampleRow(name="Test", age=25), error=e)
         assert not result3.is_valid
 
 
 class TestWorkbookSummary:
     """Test WorkbookSummary dataclass."""
-    
+
     def test_workbook_summary_error_rate(self):
         """Test error rate calculation."""
         # No errors
         summary1 = WorkbookSummary(total_rows=10, valid_rows=10, invalid_rows=0)
         assert summary1.error_rate == 0.0
-        
+
         # 50% error rate
         summary2 = WorkbookSummary(total_rows=10, valid_rows=5, invalid_rows=5)
         assert summary2.error_rate == 50.0
-        
+
         # All errors
         summary3 = WorkbookSummary(total_rows=10, valid_rows=0, invalid_rows=10)
         assert summary3.error_rate == 100.0
-        
+
         # Empty workbook
         summary4 = WorkbookSummary(total_rows=0, valid_rows=0, invalid_rows=0)
         assert summary4.error_rate == 0.0
@@ -144,7 +140,7 @@ class TestWorkbookSummary:
 
 class TestWorkbookValidationResult:
     """Test WorkbookValidationResult dataclass."""
-    
+
     def test_valid_models_property(self):
         """Test extraction of valid models."""
         # Create some test data
@@ -152,28 +148,28 @@ class TestWorkbookValidationResult:
             RowResult(
                 context=RowContext(row_index=1, raw={"name": "Alice", "age": 30}),
                 model=SampleRow(name="Alice", age=30),
-                error=None
+                error=None,
             ),
             RowResult(
                 context=RowContext(row_index=2, raw={"name": "Bob", "age": "invalid"}),
                 model=None,
-                error=ValidationError.from_exception_data("test", [])
+                error=ValidationError.from_exception_data("test", []),
             ),
             RowResult(
                 context=RowContext(row_index=3, raw={"name": "Charlie", "age": 25}),
                 model=SampleRow(name="Charlie", age=25),
-                error=None
+                error=None,
             ),
         ]
-        
+
         summary = WorkbookSummary(total_rows=3, valid_rows=2, invalid_rows=1)
         result = WorkbookValidationResult(summary=summary, rows=rows)
-        
+
         valid_models = result.valid_models
         assert len(valid_models) == 2
         assert valid_models[0].name == "Alice"
         assert valid_models[1].name == "Charlie"
-    
+
     def test_errors_property(self):
         """Test extraction of errors with row indices."""
         # Create test data with errors by actually triggering validation errors
@@ -182,34 +178,30 @@ class TestWorkbookValidationResult:
             SampleRow(name="Bob", age="invalid")
         except ValidationError as e:
             error1 = e
-        
+
         error2 = None
         try:
             SampleRow(age=25)  # Missing required 'name' field
         except ValidationError as e:
             error2 = e
-        
+
         rows = [
             RowResult(
                 context=RowContext(row_index=1, raw={"name": "Alice", "age": 30}),
                 model=SampleRow(name="Alice", age=30),
-                error=None
+                error=None,
             ),
             RowResult(
                 context=RowContext(row_index=2, raw={"name": "Bob", "age": "invalid"}),
                 model=None,
-                error=error1
+                error=error1,
             ),
-            RowResult(
-                context=RowContext(row_index=3, raw={"age": 25}),
-                model=None,
-                error=error2
-            ),
+            RowResult(context=RowContext(row_index=3, raw={"age": 25}), model=None, error=error2),
         ]
-        
+
         summary = WorkbookSummary(total_rows=3, valid_rows=1, invalid_rows=2)
         result = WorkbookValidationResult(summary=summary, rows=rows)
-        
+
         errors = result.errors
         assert len(errors) == 2
         assert errors[0][0] == 2  # Row index
@@ -220,13 +212,13 @@ class TestWorkbookValidationResult:
 
 class TestTabularFormat:
     """Test TabularFormat enum."""
-    
+
     def test_tabular_format_values(self):
         """Test enum values."""
         assert TabularFormat.auto.value == "auto"
         assert TabularFormat.csv.value == "csv"
         assert TabularFormat.xlsx.value == "xlsx"
-    
+
     def test_tabular_format_string_enum(self):
         """Test that TabularFormat inherits from str."""
         assert isinstance(TabularFormat.csv, str)
@@ -235,125 +227,125 @@ class TestTabularFormat:
 
 class TestParseFileSize:
     """Test parse_file_size helper function."""
-    
+
     def test_parse_file_size_bytes(self):
         """Test parsing integer bytes."""
         assert parse_file_size(1024) == 1024
         assert parse_file_size(0) == 0
         assert parse_file_size(10485760) == 10485760
-    
+
     def test_parse_file_size_string_bytes(self):
         """Test parsing string with B unit."""
         assert parse_file_size("1024") == 1024
         assert parse_file_size("1024B") == 1024
         assert parse_file_size("1024b") == 1024
         assert parse_file_size("0") == 0
-    
+
     def test_parse_file_size_kb(self):
         """Test parsing KB units."""
         assert parse_file_size("1KB") == 1024
         assert parse_file_size("5KB") == 5 * 1024
         assert parse_file_size("10kb") == 10 * 1024
         assert parse_file_size("1.5KB") == int(1.5 * 1024)
-    
+
     def test_parse_file_size_mb(self):
         """Test parsing MB units."""
         assert parse_file_size("1MB") == 1024 * 1024
         assert parse_file_size("10MB") == 10 * 1024 * 1024
         assert parse_file_size("5mb") == 5 * 1024 * 1024
         assert parse_file_size("2.5MB") == int(2.5 * 1024 * 1024)
-    
+
     def test_parse_file_size_gb(self):
         """Test parsing GB units."""
         assert parse_file_size("1GB") == 1024 * 1024 * 1024
         assert parse_file_size("2GB") == 2 * 1024 * 1024 * 1024
         assert parse_file_size("0.5GB") == int(0.5 * 1024 * 1024 * 1024)
-    
+
     def test_parse_file_size_whitespace(self):
         """Test parsing with whitespace."""
         assert parse_file_size(" 10MB ") == 10 * 1024 * 1024
         assert parse_file_size(" 5 KB ") == 5 * 1024
         assert parse_file_size("1 GB") == 1024 * 1024 * 1024
-    
+
     def test_parse_file_size_invalid_format(self):
         """Test invalid format raises ValueError."""
         # Test completely invalid string
         with pytest.raises(ValueError) as exc_info:
             parse_file_size("invalid")
         assert "Invalid file size format" in str(exc_info.value)
-        
+
         # Test unsupported unit (TB not supported)
         with pytest.raises(ValueError) as exc_info:
             parse_file_size("10TB")
         assert "Invalid file size format" in str(exc_info.value)
-        
+
         # Test non-numeric prefix
         with pytest.raises(ValueError) as exc_info:
             parse_file_size("abcMB")
         assert "Invalid file size format" in str(exc_info.value)
-    
+
     def test_parse_file_size_negative(self):
         """Test negative values raise ValueError."""
         with pytest.raises(ValueError, match="File size must be non-negative"):
             parse_file_size(-1)
-        
+
         with pytest.raises(ValueError, match="File size must be non-negative"):
             parse_file_size("-10MB")
-    
+
     def test_parse_file_size_empty_string(self):
         """Test empty string raises ValueError."""
         with pytest.raises(ValueError, match="File size cannot be empty"):
             parse_file_size("")
-        
+
         with pytest.raises(ValueError, match="File size cannot be empty"):
             parse_file_size("   ")
-    
+
     def test_parse_file_size_wrong_type(self):
         """Test wrong type raises ValueError."""
         with pytest.raises(ValueError, match="File size must be int or str"):
             parse_file_size(None)
-        
+
         with pytest.raises(ValueError, match="File size must be int or str"):
             parse_file_size([])
 
 
 class TestWorkbookConfigFileSize:
     """Test WorkbookConfig with max_file_size."""
-    
+
     def test_workbook_config_max_file_size_none(self):
         """Test that max_file_size defaults to None."""
         config = WorkbookConfig()
         assert config.max_file_size is None
         assert config.max_file_size_bytes is None
-    
+
     def test_workbook_config_max_file_size_int(self):
         """Test max_file_size as integer bytes."""
         config = WorkbookConfig(max_file_size=10485760)
         assert config.max_file_size == 10485760
         assert config.max_file_size_bytes == 10485760
-    
+
     def test_workbook_config_max_file_size_string_mb(self):
         """Test max_file_size as string with MB unit."""
         config = WorkbookConfig(max_file_size="10MB")
         assert config.max_file_size == "10MB"
         assert config.max_file_size_bytes == 10 * 1024 * 1024
-    
+
     def test_workbook_config_max_file_size_string_kb(self):
         """Test max_file_size as string with KB unit."""
         config = WorkbookConfig(max_file_size="5KB")
         assert config.max_file_size == "5KB"
         assert config.max_file_size_bytes == 5 * 1024
-    
+
     def test_workbook_config_max_file_size_string_gb(self):
         """Test max_file_size as string with GB unit."""
         config = WorkbookConfig(max_file_size="2GB")
         assert config.max_file_size == "2GB"
         assert config.max_file_size_bytes == 2 * 1024 * 1024 * 1024
-    
+
     def test_workbook_config_max_file_size_invalid(self):
         """Test invalid max_file_size raises ValueError."""
         with pytest.raises(ValueError, match="Invalid max_file_size"):
             WorkbookConfig(max_file_size="invalid")
-        
+
         with pytest.raises(ValueError, match="Invalid max_file_size"):
             WorkbookConfig(max_file_size=-1)

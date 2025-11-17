@@ -88,4 +88,3 @@ def validate_on_change(
         return wrapper
 
     return decorator
-
