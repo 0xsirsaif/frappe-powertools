@@ -120,6 +120,71 @@ class WorkbookConfig:
             raise ValueError("max_rows must be >= 1")
 
 
+def _get_model_with_extra_config(
+    model: Type[TModel],
+    extra: Literal["ignore", "forbid", "allow"],
+) -> Type[TModel]:
+    """Get a model class with the specified extra field configuration.
+    
+    Args:
+        model: Base Pydantic model class
+        extra: How to handle extra fields ("ignore", "forbid", or "allow")
+    
+    Returns:
+        Model class with the specified extra configuration
+    """
+    if extra == "forbid":
+        class StrictModel(model):
+            model_config = ConfigDict(extra="forbid")
+        return StrictModel
+    elif extra == "allow":
+        class AllowModel(model):
+            model_config = ConfigDict(extra="allow")
+        return AllowModel
+    else:
+        # Use original model (which should have extra="ignore" by default)
+        return model
+
+
+def _normalize_value(value: Any) -> Any:
+    """Normalize a cell value for Pydantic validation.
+    
+    - Strips whitespace from strings
+    - Converts empty strings to None
+    
+    Args:
+        value: Raw cell value
+    
+    Returns:
+        Normalized value
+    """
+    if isinstance(value, str):
+        clean_value = value.strip()
+        # Convert empty strings to None for better Pydantic handling
+        return None if clean_value == '' else clean_value
+    return value
+
+
+def _normalize_row_dict(row_dict: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize a row dictionary for Pydantic validation.
+    
+    - Strips whitespace from keys and values
+    - Converts empty strings to None
+    
+    Args:
+        row_dict: Raw row dictionary
+    
+    Returns:
+        Normalized row dictionary
+    """
+    normalized_row = {}
+    for key, value in row_dict.items():
+        # Strip whitespace from both keys and values
+        clean_key = key.strip() if key else key
+        normalized_row[clean_key] = _normalize_value(value)
+    return normalized_row
+
+
 def _detect_format(
     fp: BinaryIO | TextIO,
     file_name: str | None = None,
@@ -293,20 +358,7 @@ def _iter_csv_rows(
     rows_processed = 0
     
     # Configure Pydantic model validation based on config.extra
-    model_config = {}
-    if config.extra == "forbid":
-        # Create a dynamic model class with forbid extra
-        class StrictModel(model):
-            model_config = ConfigDict(extra="forbid")
-        model_to_use = StrictModel
-    elif config.extra == "allow":
-        # Create a dynamic model class with allow extra
-        class AllowModel(model):
-            model_config = ConfigDict(extra="allow")
-        model_to_use = AllowModel
-    else:
-        # Use original model (which should have extra="ignore" by default)
-        model_to_use = model
+    model_to_use = _get_model_with_extra_config(model, config.extra)
     
     # Iterate through data rows
     for row_dict in reader:
@@ -317,16 +369,7 @@ def _iter_csv_rows(
             continue
         
         # Normalize row data: strip whitespace and convert empty strings to None
-        normalized_row = {}
-        for key, value in row_dict.items():
-            # Strip whitespace from both keys and values
-            clean_key = key.strip() if key else key
-            if isinstance(value, str):
-                clean_value = value.strip()
-                # Convert empty strings to None for better Pydantic handling
-                normalized_row[clean_key] = None if clean_value == '' else clean_value
-            else:
-                normalized_row[clean_key] = value
+        normalized_row = _normalize_row_dict(row_dict)
         
         # Create row context with original data
         context = RowContext(row_index=current_row_index, raw=row_dict)
@@ -405,16 +448,7 @@ def _iter_xlsx_rows(
         return
     
     # Configure Pydantic model validation based on config.extra
-    if config.extra == "forbid":
-        class StrictModel(model):
-            model_config = ConfigDict(extra="forbid")
-        model_to_use = StrictModel
-    elif config.extra == "allow":
-        class AllowModel(model):
-            model_config = ConfigDict(extra="allow")
-        model_to_use = AllowModel
-    else:
-        model_to_use = model
+    model_to_use = _get_model_with_extra_config(model, config.extra)
     
     # Iterate through data rows
     data_start_row = config.data_row_start
@@ -433,14 +467,8 @@ def _iter_xlsx_rows(
         for i, header in enumerate(headers):
             if i < len(row_values):
                 value = row_values[i]
-                # Normalize: convert None to None, strip strings, convert empty strings to None
-                if value is None:
-                    row_dict[header] = None
-                elif isinstance(value, str):
-                    clean_value = value.strip()
-                    row_dict[header] = None if clean_value == '' else clean_value
-                else:
-                    row_dict[header] = value
+                # Normalize value (strip strings, convert empty strings to None)
+                row_dict[header] = _normalize_value(value)
         
         # Create row context (1-based row index)
         context = RowContext(row_index=row_num, raw=row_dict)
