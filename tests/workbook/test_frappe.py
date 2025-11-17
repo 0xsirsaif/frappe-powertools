@@ -10,6 +10,8 @@ from pydantic import BaseModel
 
 from frappe_powertools.workbook.core import WorkbookConfig, TabularFormat
 
+import frappe_powertools.workbook.frappe as frappe_module
+
 
 # Test models
 class CustomerRow(BaseModel):
@@ -77,7 +79,6 @@ class TestValidateFile:
         self, mock_file_doc, valid_csv_content
     ):
         """Test validate_file with string file name for CSV."""
-        import frappe_powertools.workbook.frappe as frappe_module
         
         # Setup mock
         mock_file_doc.get_content.return_value = valid_csv_content
@@ -105,7 +106,6 @@ class TestValidateFile:
         self, mock_file_doc, valid_csv_content
     ):
         """Test validate_file with File Document instance for CSV."""
-        import frappe_powertools.workbook.frappe as frappe_module
         
         # Setup mock
         mock_file_doc.get_content.return_value = valid_csv_content
@@ -126,7 +126,6 @@ class TestValidateFile:
         self, mock_file_doc, valid_xlsx_content
     ):
         """Test validate_file with XLSX file."""
-        import frappe_powertools.workbook.frappe as frappe_module
         
         # Setup mock
         mock_file_doc.file_name = "test.xlsx"
@@ -148,7 +147,6 @@ class TestValidateFile:
         self, mock_file_doc, valid_csv_content
     ):
         """Test validate_file with custom config."""
-        import frappe_powertools.workbook.frappe as frappe_module
         
         # Setup mock
         mock_file_doc.get_content.return_value = valid_csv_content
@@ -166,7 +164,6 @@ class TestValidateFile:
     
     def test_validate_file_file_not_found(self):
         """Test validate_file when file is not found."""
-        import frappe_powertools.workbook.frappe as frappe_module
         
         # Setup mock to raise DoesNotExistError
         frappe_module.frappe = MagicMock()
@@ -179,7 +176,6 @@ class TestValidateFile:
     
     def test_validate_file_permission_denied(self, mock_file_doc):
         """Test validate_file when permission is denied."""
-        import frappe_powertools.workbook.frappe as frappe_module
         
         # Setup mock
         mock_file_doc.has_permission.return_value = False
@@ -193,7 +189,6 @@ class TestValidateFile:
     
     def test_validate_file_empty_content(self, mock_file_doc):
         """Test validate_file when file content is empty."""
-        import frappe_powertools.workbook.frappe as frappe_module
         
         # Setup mock
         mock_file_doc.get_content.return_value = None
@@ -207,7 +202,6 @@ class TestValidateFile:
     
     def test_validate_file_string_content(self, mock_file_doc):
         """Test validate_file when get_content returns string (should be converted to bytes)."""
-        import frappe_powertools.workbook.frappe as frappe_module
         
         # Setup mock - return string content
         csv_string = dedent_csv("""
@@ -229,7 +223,6 @@ class TestValidateFile:
     
     def test_validate_file_wrong_doctype(self):
         """Test validate_file when document is not a File doctype."""
-        import frappe_powertools.workbook.frappe as frappe_module
         
         # Create a mock document that's not a File
         wrong_doc = MagicMock()
@@ -242,7 +235,6 @@ class TestValidateFile:
     def test_validate_file_without_frappe(self):
         """Test that validate_file raises ImportError when frappe is not available."""
         # Temporarily remove frappe from the module
-        import frappe_powertools.workbook.frappe as frappe_module
         original_frappe = frappe_module.frappe
         frappe_module.frappe = None
         
@@ -255,7 +247,6 @@ class TestValidateFile:
     
     def test_validate_file_invalid_file_type(self):
         """Test validate_file with invalid file type."""
-        import frappe_powertools.workbook.frappe as frappe_module
         
         # Test with invalid type
         with pytest.raises(TypeError, match="file must be a string.*File Document"):
@@ -265,7 +256,6 @@ class TestValidateFile:
         self, mock_file_doc, valid_csv_content
     ):
         """Test that background parameter is accepted but ignored."""
-        import frappe_powertools.workbook.frappe as frappe_module
         
         # Setup mock
         mock_file_doc.get_content.return_value = valid_csv_content
@@ -286,7 +276,6 @@ class TestValidateFile:
         self, mock_file_doc, valid_xlsx_content
     ):
         """Test that file_name is used for format auto-detection."""
-        import frappe_powertools.workbook.frappe as frappe_module
         
         # Setup mock with XLSX content but no explicit format
         mock_file_doc.file_name = "data.xlsx"
@@ -302,4 +291,141 @@ class TestValidateFile:
         # Should detect XLSX from filename
         assert result.summary.total_rows == 3
         assert result.summary.valid_rows == 3
+    
+    def test_validate_file_size_exceeds_limit(self):
+        """Test file size validation when file exceeds limit."""
+        from unittest.mock import MagicMock
+        
+        # Create a mock file document
+        mock_file_doc = MagicMock()
+        mock_file_doc.doctype = "File"
+        mock_file_doc.name = "test_file_001"
+        mock_file_doc.file_name = "large_file.csv"
+        mock_file_doc.file_size = 15 * 1024 * 1024  # 15MB
+        mock_file_doc.has_permission.return_value = True
+        
+        # Create valid CSV content
+        csv_content = "code,name,email\nCUST001,Alice,alice@example.com\nCUST002,Bob,bob@example.com"
+        mock_file_doc.get_content.return_value = csv_content.encode('utf-8')
+        
+        frappe_module.frappe = MagicMock()
+        frappe_module.frappe.get_doc.return_value = mock_file_doc
+        frappe_module.frappe.DoesNotExistError = Exception
+        
+        # Test with 10MB limit
+        config = WorkbookConfig(max_file_size="10MB")
+        
+        with pytest.raises(ValueError, match="File size exceeds maximum limit"):
+            frappe_module.validate_file("test_file_001", CustomerRow, config=config)
+    
+    def test_validate_file_size_within_limit(self):
+        """Test file size validation when file is within limit."""
+        from unittest.mock import MagicMock
+        
+        # Create a mock file document
+        mock_file_doc = MagicMock()
+        mock_file_doc.doctype = "File"
+        mock_file_doc.name = "test_file_001"
+        mock_file_doc.file_name = "small_file.csv"
+        mock_file_doc.file_size = 5 * 1024 * 1024  # 5MB
+        mock_file_doc.has_permission.return_value = True
+        
+        # Create valid CSV content
+        csv_content = "code,name,email\nCUST001,Alice,alice@example.com\nCUST002,Bob,bob@example.com"
+        mock_file_doc.get_content.return_value = csv_content.encode('utf-8')
+        
+        frappe_module.frappe = MagicMock()
+        frappe_module.frappe.get_doc.return_value = mock_file_doc
+        frappe_module.frappe.DoesNotExistError = Exception
+        
+        # Test with 10MB limit
+        config = WorkbookConfig(max_file_size="10MB")
+        result = frappe_module.validate_file("test_file_001", CustomerRow, config=config)
+        
+        # Should succeed
+        assert result.summary.total_rows == 2
+        assert result.summary.valid_rows == 2
+    
+    def test_validate_file_size_no_limit(self):
+        """Test file size validation when no limit is set."""
+        from unittest.mock import MagicMock
+        
+        # Create a mock file document
+        mock_file_doc = MagicMock()
+        mock_file_doc.doctype = "File"
+        mock_file_doc.name = "test_file_001"
+        mock_file_doc.file_name = "large_file.csv"
+        mock_file_doc.file_size = 100 * 1024 * 1024  # 100MB
+        mock_file_doc.has_permission.return_value = True
+        
+        # Create valid CSV content
+        csv_content = "code,name,email\nCUST001,Alice,alice@example.com\nCUST002,Bob,bob@example.com"
+        mock_file_doc.get_content.return_value = csv_content.encode('utf-8')
+        
+        frappe_module.frappe = MagicMock()
+        frappe_module.frappe.get_doc.return_value = mock_file_doc
+        frappe_module.frappe.DoesNotExistError = Exception
+        
+        # Test with no limit (default)
+        config = WorkbookConfig()
+        result = frappe_module.validate_file("test_file_001", CustomerRow, config=config)
+        
+        # Should succeed even with large file
+        assert result.summary.total_rows == 2
+        assert result.summary.valid_rows == 2
+    
+    def test_validate_file_size_fallback_to_content_length(self):
+        """Test file size validation falls back to content length when file_size not available."""
+        from unittest.mock import MagicMock
+        
+        # Create a mock file document without file_size attribute
+        mock_file_doc = MagicMock()
+        mock_file_doc.doctype = "File"
+        mock_file_doc.name = "test_file_001"
+        mock_file_doc.file_name = "large_file.csv"
+        # Remove file_size attribute
+        del mock_file_doc.file_size
+        mock_file_doc.has_permission.return_value = True
+        
+        # Create large content (15MB)
+        large_content = b"x" * (15 * 1024 * 1024)
+        mock_file_doc.get_content.return_value = large_content
+        
+        frappe_module.frappe = MagicMock()
+        frappe_module.frappe.get_doc.return_value = mock_file_doc
+        frappe_module.frappe.DoesNotExistError = Exception
+        
+        # Test with 10MB limit
+        config = WorkbookConfig(max_file_size="10MB")
+        
+        with pytest.raises(ValueError, match="File size exceeds maximum limit"):
+            frappe_module.validate_file("test_file_001", CustomerRow, config=config)
+    
+    def test_validate_file_size_with_int_bytes(self):
+        """Test file size validation with integer bytes in config."""
+        from unittest.mock import MagicMock
+        
+        # Create a mock file document
+        mock_file_doc = MagicMock()
+        mock_file_doc.doctype = "File"
+        mock_file_doc.name = "test_file_001"
+        mock_file_doc.file_name = "small_file.csv"
+        mock_file_doc.file_size = 5 * 1024 * 1024  # 5MB
+        mock_file_doc.has_permission.return_value = True
+        
+        # Create valid CSV content
+        csv_content = "code,name,email\nCUST001,Alice,alice@example.com\nCUST002,Bob,bob@example.com"
+        mock_file_doc.get_content.return_value = csv_content.encode('utf-8')
+        
+        frappe_module.frappe = MagicMock()
+        frappe_module.frappe.get_doc.return_value = mock_file_doc
+        frappe_module.frappe.DoesNotExistError = Exception
+        
+        # Test with integer bytes (10MB)
+        config = WorkbookConfig(max_file_size=10 * 1024 * 1024)
+        result = frappe_module.validate_file("test_file_001", CustomerRow, config=config)
+        
+        # Should succeed
+        assert result.summary.total_rows == 2
+        assert result.summary.valid_rows == 2
 

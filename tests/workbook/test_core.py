@@ -10,6 +10,7 @@ from frappe_powertools.workbook.core import (
     WorkbookConfig,
     WorkbookSummary,
     WorkbookValidationResult,
+    parse_file_size,
 )
 
 
@@ -230,3 +231,129 @@ class TestTabularFormat:
         """Test that TabularFormat inherits from str."""
         assert isinstance(TabularFormat.csv, str)
         assert TabularFormat.csv == "csv"
+
+
+class TestParseFileSize:
+    """Test parse_file_size helper function."""
+    
+    def test_parse_file_size_bytes(self):
+        """Test parsing integer bytes."""
+        assert parse_file_size(1024) == 1024
+        assert parse_file_size(0) == 0
+        assert parse_file_size(10485760) == 10485760
+    
+    def test_parse_file_size_string_bytes(self):
+        """Test parsing string with B unit."""
+        assert parse_file_size("1024") == 1024
+        assert parse_file_size("1024B") == 1024
+        assert parse_file_size("1024b") == 1024
+        assert parse_file_size("0") == 0
+    
+    def test_parse_file_size_kb(self):
+        """Test parsing KB units."""
+        assert parse_file_size("1KB") == 1024
+        assert parse_file_size("5KB") == 5 * 1024
+        assert parse_file_size("10kb") == 10 * 1024
+        assert parse_file_size("1.5KB") == int(1.5 * 1024)
+    
+    def test_parse_file_size_mb(self):
+        """Test parsing MB units."""
+        assert parse_file_size("1MB") == 1024 * 1024
+        assert parse_file_size("10MB") == 10 * 1024 * 1024
+        assert parse_file_size("5mb") == 5 * 1024 * 1024
+        assert parse_file_size("2.5MB") == int(2.5 * 1024 * 1024)
+    
+    def test_parse_file_size_gb(self):
+        """Test parsing GB units."""
+        assert parse_file_size("1GB") == 1024 * 1024 * 1024
+        assert parse_file_size("2GB") == 2 * 1024 * 1024 * 1024
+        assert parse_file_size("0.5GB") == int(0.5 * 1024 * 1024 * 1024)
+    
+    def test_parse_file_size_whitespace(self):
+        """Test parsing with whitespace."""
+        assert parse_file_size(" 10MB ") == 10 * 1024 * 1024
+        assert parse_file_size(" 5 KB ") == 5 * 1024
+        assert parse_file_size("1 GB") == 1024 * 1024 * 1024
+    
+    def test_parse_file_size_invalid_format(self):
+        """Test invalid format raises ValueError."""
+        # Test completely invalid string
+        with pytest.raises(ValueError) as exc_info:
+            parse_file_size("invalid")
+        assert "Invalid file size format" in str(exc_info.value)
+        
+        # Test unsupported unit (TB not supported)
+        with pytest.raises(ValueError) as exc_info:
+            parse_file_size("10TB")
+        assert "Invalid file size format" in str(exc_info.value)
+        
+        # Test non-numeric prefix
+        with pytest.raises(ValueError) as exc_info:
+            parse_file_size("abcMB")
+        assert "Invalid file size format" in str(exc_info.value)
+    
+    def test_parse_file_size_negative(self):
+        """Test negative values raise ValueError."""
+        with pytest.raises(ValueError, match="File size must be non-negative"):
+            parse_file_size(-1)
+        
+        with pytest.raises(ValueError, match="File size must be non-negative"):
+            parse_file_size("-10MB")
+    
+    def test_parse_file_size_empty_string(self):
+        """Test empty string raises ValueError."""
+        with pytest.raises(ValueError, match="File size cannot be empty"):
+            parse_file_size("")
+        
+        with pytest.raises(ValueError, match="File size cannot be empty"):
+            parse_file_size("   ")
+    
+    def test_parse_file_size_wrong_type(self):
+        """Test wrong type raises ValueError."""
+        with pytest.raises(ValueError, match="File size must be int or str"):
+            parse_file_size(None)
+        
+        with pytest.raises(ValueError, match="File size must be int or str"):
+            parse_file_size([])
+
+
+class TestWorkbookConfigFileSize:
+    """Test WorkbookConfig with max_file_size."""
+    
+    def test_workbook_config_max_file_size_none(self):
+        """Test that max_file_size defaults to None."""
+        config = WorkbookConfig()
+        assert config.max_file_size is None
+        assert config.max_file_size_bytes is None
+    
+    def test_workbook_config_max_file_size_int(self):
+        """Test max_file_size as integer bytes."""
+        config = WorkbookConfig(max_file_size=10485760)
+        assert config.max_file_size == 10485760
+        assert config.max_file_size_bytes == 10485760
+    
+    def test_workbook_config_max_file_size_string_mb(self):
+        """Test max_file_size as string with MB unit."""
+        config = WorkbookConfig(max_file_size="10MB")
+        assert config.max_file_size == "10MB"
+        assert config.max_file_size_bytes == 10 * 1024 * 1024
+    
+    def test_workbook_config_max_file_size_string_kb(self):
+        """Test max_file_size as string with KB unit."""
+        config = WorkbookConfig(max_file_size="5KB")
+        assert config.max_file_size == "5KB"
+        assert config.max_file_size_bytes == 5 * 1024
+    
+    def test_workbook_config_max_file_size_string_gb(self):
+        """Test max_file_size as string with GB unit."""
+        config = WorkbookConfig(max_file_size="2GB")
+        assert config.max_file_size == "2GB"
+        assert config.max_file_size_bytes == 2 * 1024 * 1024 * 1024
+    
+    def test_workbook_config_max_file_size_invalid(self):
+        """Test invalid max_file_size raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid max_file_size"):
+            WorkbookConfig(max_file_size="invalid")
+        
+        with pytest.raises(ValueError, match="Invalid max_file_size"):
+            WorkbookConfig(max_file_size=-1)

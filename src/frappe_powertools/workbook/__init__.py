@@ -13,6 +13,7 @@ from .core import (
     WorkbookSummary,
     WorkbookValidationResult,
     iter_validated_rows,
+    parse_file_size,
     validate_workbook,
 )
 
@@ -24,5 +25,6 @@ __all__ = [
     "WorkbookSummary",
     "WorkbookValidationResult",
     "iter_validated_rows",
+    "parse_file_size",
     "validate_workbook",
 ]

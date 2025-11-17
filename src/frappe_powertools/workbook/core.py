@@ -7,15 +7,82 @@ for validating CSV/XLSX workbooks against Pydantic models.
 from __future__ import annotations
 
 import csv
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, BinaryIO, Generic, Literal, Mapping, Optional, TextIO, Type, TypeVar
+from typing import Any, BinaryIO, Generic, Literal, Mapping, Optional, TextIO, Type, TypeVar, Union
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 # Type variable for Pydantic models
 TModel = TypeVar("TModel", bound=BaseModel)
+
+
+def parse_file_size(size: Union[int, str]) -> int:
+	"""Parse file size from string with units or integer bytes.
+	
+	Supports units: B, KB, MB, GB (case-insensitive)
+	Examples:
+		- "10MB" -> 10485760
+		- "5KB" -> 5120
+		- 10485760 -> 10485760 (returns as-is if already int)
+	
+	Args:
+		size: File size as int (bytes) or str with unit (e.g., "10MB")
+	
+	Returns:
+		File size in bytes as integer
+	
+	Raises:
+		ValueError: If size string format is invalid or size is negative
+	"""
+	if isinstance(size, int):
+		if size < 0:
+			raise ValueError("File size must be non-negative")
+		return size
+	
+	if not isinstance(size, str):
+		raise ValueError(f"File size must be int or str, got {type(size).__name__}")
+	
+	# Strip whitespace
+	size = size.strip()
+	if not size:
+		raise ValueError("File size cannot be empty")
+	
+	# Check for negative numbers explicitly
+	if size.startswith('-'):
+		raise ValueError("File size must be non-negative")
+	
+	# Pattern: number followed by optional unit (B, KB, MB, GB)
+	pattern = r"^(\d+(?:\.\d+)?)\s*(B|KB|MB|GB)?$"
+	match = re.match(pattern, size.upper())
+	
+	if not match:
+		raise ValueError(
+			f"Invalid file size format: '{size}'. "
+			f"Expected format: number with optional unit (B, KB, MB, GB). "
+			f"Examples: '10MB', '5KB', '1024'"
+		)
+	
+	number_str, unit = match.groups()
+	number = float(number_str)
+	
+	if number < 0:
+		raise ValueError("File size must be non-negative")
+	
+	# Convert to bytes based on unit
+	unit_multipliers = {
+		"B": 1,
+		"KB": 1024,
+		"MB": 1024 * 1024,
+		"GB": 1024 * 1024 * 1024,
+	}
+	
+	# Default to bytes if no unit specified
+	multiplier = unit_multipliers.get(unit or "B", 1)
+	
+	return int(number * multiplier)
 
 
 class TabularFormat(str, Enum):
@@ -105,6 +172,7 @@ class WorkbookConfig:
     extra: Literal["ignore", "forbid", "allow"] = "ignore"
     stop_on_first_error: bool = False
     max_rows: int | None = None  # None means no explicit limit
+    max_file_size: Union[int, str, None] = None  # Max file size in bytes or with unit (e.g., "10MB"), None = no limit
     
     def __post_init__(self):
         """Set defaults for computed fields."""
@@ -118,6 +186,20 @@ class WorkbookConfig:
             raise ValueError("data_row_start must be >= header_row")
         if self.max_rows is not None and self.max_rows < 1:
             raise ValueError("max_rows must be >= 1")
+        
+        # Parse and validate max_file_size if provided
+        if self.max_file_size is not None:
+            try:
+                self._max_file_size_bytes = parse_file_size(self.max_file_size)
+            except ValueError as e:
+                raise ValueError(f"Invalid max_file_size: {e}") from e
+        else:
+            self._max_file_size_bytes = None
+    
+    @property
+    def max_file_size_bytes(self) -> int | None:
+        """Get max file size in bytes (parsed from string if needed)."""
+        return self._max_file_size_bytes
 
 
 def _get_model_with_extra_config(
