@@ -120,6 +120,85 @@ class WorkbookConfig:
             raise ValueError("max_rows must be >= 1")
 
 
+def _detect_format(
+    fp: BinaryIO | TextIO,
+    file_name: str | None = None,
+) -> TabularFormat:
+    """Detect workbook format from file name or content.
+    
+    Args:
+        fp: File-like object
+        file_name: Optional filename to help with detection
+        
+    Returns:
+        Detected TabularFormat (csv or xlsx)
+    """
+    # First, try to use file_name extension if available
+    if file_name:
+        file_name_lower = file_name.lower()
+        if file_name_lower.endswith(('.xlsx', '.xlsm')):
+            return TabularFormat.xlsx
+        elif file_name_lower.endswith('.csv'):
+            return TabularFormat.csv
+        # For other extensions, fall through to content detection
+    
+    # Fallback to content-based detection
+    if isinstance(fp, TextIO):
+        # TextIO is always CSV
+        return TabularFormat.csv
+    
+    # For binary streams, sniff the magic bytes
+    # Check if it's a binary stream (not TextIO and has read method)
+    is_binary = not isinstance(fp, TextIO) and hasattr(fp, 'read')
+    if is_binary:
+        # Save current position
+        try:
+            original_position = fp.tell()
+        except (AttributeError, OSError):
+            original_position = 0
+        
+        try:
+            # Always read from the beginning for detection
+            try:
+                fp.seek(0)
+            except (AttributeError, OSError):
+                # If we can't seek, try reading from current position
+                pass
+            
+            # Read first few bytes to check for ZIP magic (XLSX files are ZIP archives)
+            sample = fp.read(4)
+            
+            # Always try to reset to original position
+            try:
+                fp.seek(original_position)
+            except (AttributeError, OSError):
+                # If we can't seek back, try to seek to 0 as fallback
+                try:
+                    fp.seek(0)
+                except (AttributeError, OSError):
+                    pass
+            
+            # XLSX files start with ZIP magic bytes: PK\x03\x04
+            if len(sample) >= 4 and sample[:2] == b'PK' and sample[2:4] == b'\x03\x04':
+                return TabularFormat.xlsx
+            else:
+                # Default to CSV for binary streams without ZIP magic
+                return TabularFormat.csv
+        except Exception:
+            # If reading fails, try to reset and default to CSV
+            try:
+                fp.seek(original_position)
+            except (AttributeError, OSError):
+                try:
+                    fp.seek(0)
+                except (AttributeError, OSError):
+                    pass
+            return TabularFormat.csv
+    
+    # Default fallback
+    return TabularFormat.csv
+
+
 def iter_validated_rows(
     fp: BinaryIO | TextIO,
     model: Type[TModel],
@@ -146,21 +225,32 @@ def iter_validated_rows(
     if config is None:
         config = WorkbookConfig()
     
-    # For now, only handle CSV format
+    # Determine format to use
     if config.format == TabularFormat.xlsx:
-        raise NotImplementedError("XLSX support will be implemented in Phase 3")
-    
-    # Default to CSV for auto detection (will refine in Phase 4)
-    if config.format == TabularFormat.auto:
-        format_to_use = TabularFormat.csv
+        format_to_use = TabularFormat.xlsx
     elif config.format == TabularFormat.csv:
         format_to_use = TabularFormat.csv
+    elif config.format == TabularFormat.auto:
+        # Auto-detect format from file_name or content
+        format_to_use = _detect_format(fp, file_name)
+        # Ensure stream is at position 0 after detection for parsing
+        try:
+            fp.seek(0)
+        except (AttributeError, OSError):
+            pass
     else:
-        # For now, assume CSV if not explicitly XLSX
-        format_to_use = TabularFormat.csv
+        # Fallback to auto-detection for unknown formats
+        format_to_use = _detect_format(fp, file_name)
+        # Ensure stream is at position 0 after detection for parsing
+        try:
+            fp.seek(0)
+        except (AttributeError, OSError):
+            pass
     
     if format_to_use == TabularFormat.csv:
         yield from _iter_csv_rows(fp, model, config)
+    elif format_to_use == TabularFormat.xlsx:
+        yield from _iter_xlsx_rows(fp, model, config)
 
 
 def _iter_csv_rows(
@@ -258,6 +348,122 @@ def _iter_csv_rows(
         
         if config.max_rows is not None and rows_processed >= config.max_rows:
             break
+
+
+def _iter_xlsx_rows(
+    fp: BinaryIO | TextIO,
+    model: Type[TModel],
+    config: WorkbookConfig,
+) -> Iterator[RowResult[TModel]]:
+    """Internal helper to parse and validate XLSX rows."""
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        raise ImportError(
+            "openpyxl is required for XLSX support. Install it with: pip install openpyxl"
+        )
+    
+    # Ensure we have a binary stream for openpyxl
+    if isinstance(fp, TextIO):
+        raise ValueError("XLSX files require binary input. Please provide a BinaryIO stream.")
+    
+    # openpyxl needs the file to be seekable, so read all content if needed
+    if not hasattr(fp, 'seek') or not hasattr(fp, 'tell'):
+        # Read all content into memory
+        content = fp.read()
+        import io
+        fp = io.BytesIO(content)
+    
+    # Load workbook in read-only mode for streaming
+    wb = load_workbook(fp, read_only=True, data_only=True)
+    
+    # Select sheet
+    if config.sheet_name:
+        if config.sheet_name not in wb.sheetnames:
+            raise ValueError(f"Sheet '{config.sheet_name}' not found in workbook. Available sheets: {wb.sheetnames}")
+        ws = wb[config.sheet_name]
+    else:
+        ws = wb.active
+    
+    # Read header row
+    header_row_num = config.header_row
+    header_cells = list(ws.iter_rows(min_row=header_row_num, max_row=header_row_num, values_only=True))
+    
+    if not header_cells:
+        wb.close()
+        return
+    
+    headers = []
+    for cell_value in header_cells[0]:
+        if cell_value is not None:
+            header_str = str(cell_value).strip()
+            if header_str:  # Ignore empty headers
+                headers.append(header_str)
+    
+    if not headers:
+        wb.close()
+        return
+    
+    # Configure Pydantic model validation based on config.extra
+    if config.extra == "forbid":
+        class StrictModel(model):
+            model_config = ConfigDict(extra="forbid")
+        model_to_use = StrictModel
+    elif config.extra == "allow":
+        class AllowModel(model):
+            model_config = ConfigDict(extra="allow")
+        model_to_use = AllowModel
+    else:
+        model_to_use = model
+    
+    # Iterate through data rows
+    data_start_row = config.data_row_start
+    rows_processed = 0
+    
+    for row_num, row_values in enumerate(
+        ws.iter_rows(min_row=data_start_row, values_only=True),
+        start=data_start_row
+    ):
+        # Check if row is completely empty (all None)
+        if all(v is None for v in row_values):
+            continue
+        
+        # Build row dictionary from headers and values
+        row_dict = {}
+        for i, header in enumerate(headers):
+            if i < len(row_values):
+                value = row_values[i]
+                # Normalize: convert None to None, strip strings, convert empty strings to None
+                if value is None:
+                    row_dict[header] = None
+                elif isinstance(value, str):
+                    clean_value = value.strip()
+                    row_dict[header] = None if clean_value == '' else clean_value
+                else:
+                    row_dict[header] = value
+        
+        # Create row context (1-based row index)
+        context = RowContext(row_index=row_num, raw=row_dict)
+        
+        # Try to validate the row
+        try:
+            validated_model = model_to_use.model_validate(row_dict)
+            result = RowResult(context=context, model=validated_model, error=None)
+        except ValidationError as e:
+            result = RowResult(context=context, model=None, error=e)
+        
+        yield result
+        
+        rows_processed += 1
+        
+        # Check stopping conditions
+        if config.stop_on_first_error and result.error is not None:
+            break
+        
+        if config.max_rows is not None and rows_processed >= config.max_rows:
+            break
+    
+    wb.close()
 
 
 def validate_workbook(
