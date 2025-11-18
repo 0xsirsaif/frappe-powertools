@@ -2,7 +2,7 @@ import pytest
 from pydantic import BaseModel
 
 from frappe_powertools.listeners import change_listeners, validate_on_change
-from frappe_powertools.pydantic import PydanticValidationError, pydantic_schema
+from frappe_powertools.doctype_schema import PydanticValidationError, pydantic_schema
 
 
 class PersonSchema(BaseModel):
