@@ -1,5 +1,5 @@
 from __future__ import annotations
 
-from .schema import PydanticValidationError, pydantic_schema
+from .schema import DocModel, PydanticValidationError, pydantic_schema, use_schema
 
-__all__ = ["pydantic_schema", "PydanticValidationError"]
+__all__ = ["DocModel", "PydanticValidationError", "pydantic_schema", "use_schema"]
