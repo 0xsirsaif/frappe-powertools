@@ -16,6 +16,7 @@ from .core import (
     parse_file_size,
     validate_workbook,
 )
+from .frappe import build_validation_error_messages, validate_file
 
 __all__ = [
     "RowContext",
@@ -24,7 +25,9 @@ __all__ = [
     "WorkbookConfig",
     "WorkbookSummary",
     "WorkbookValidationResult",
+    "build_validation_error_messages",
     "iter_validated_rows",
     "parse_file_size",
+    "validate_file",
     "validate_workbook",
 ]
