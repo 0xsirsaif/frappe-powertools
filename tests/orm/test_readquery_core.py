@@ -628,3 +628,178 @@ def test_readquery_filter_mixed_lookups_with_membership():
     assert query.filters[1] == {"score__gt": 50}
     assert query.filters[2] == {"program__not_in": ["PROG-OLD", "PROG-DEPRECATED"]}
     assert query.filters[3] == {"score__lte": 100}
+
+
+def test_readquery_filter_isnull_lookup():
+    """Test that isnull lookup works correctly."""
+    query = ReadQuery(TrainingBatchSchema).filter(end_date__isnull=True)
+
+    assert len(query.filters) == 1
+    assert query.filters[0] == {"end_date__isnull": True}
+
+
+def test_readquery_filter_isnull_true_and_false():
+    """Test that isnull lookup works with both True and False."""
+    query = (
+        ReadQuery(TrainingBatchSchema)
+        .filter(end_date__isnull=True)
+        .filter(start_date__isnull=False)
+    )
+
+    assert len(query.filters) == 2
+    assert query.filters[0] == {"end_date__isnull": True}
+    assert query.filters[1] == {"start_date__isnull": False}
+
+
+def test_readquery_filter_isnull_true_builds_isnull_condition():
+    """Test that isnull=True builds isnull() condition."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_isnull = MagicMock(return_value=MagicMock())
+    mock_field.isnull = mock_isnull
+    mock_table.__getitem__ = MagicMock(return_value=mock_field)
+
+    parsed = ParsedLookup(field_name="end_date", lookup="isnull", value=True)
+    condition = query._build_condition(mock_table, parsed)
+
+    assert condition is not None
+    mock_isnull.assert_called_once()
+
+
+def test_readquery_filter_isnull_false_builds_notnull_condition():
+    """Test that isnull=False builds notnull() condition."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_notnull = MagicMock(return_value=MagicMock())
+    mock_field.notnull = mock_notnull
+    mock_table.__getitem__ = MagicMock(return_value=mock_field)
+
+    parsed = ParsedLookup(field_name="end_date", lookup="isnull", value=False)
+    condition = query._build_condition(mock_table, parsed)
+
+    assert condition is not None
+    mock_notnull.assert_called_once()
+
+
+def test_readquery_filter_isnull_with_non_bool_raises_error():
+    """Test that isnull lookup with non-boolean raises ValueError."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_table.__getitem__.return_value = mock_field
+
+    parsed = ParsedLookup(field_name="end_date", lookup="isnull", value="yes")
+
+    with pytest.raises(ValueError, match="isnull lookup requires a boolean value.*got str"):
+        query._build_condition(mock_table, parsed)
+
+
+def test_readquery_filter_blank_lookup():
+    """Test that blank lookup works correctly."""
+    query = ReadQuery(TrainingBatchSchema).filter(title__blank=True)
+
+    assert len(query.filters) == 1
+    assert query.filters[0] == {"title__blank": True}
+
+
+def test_readquery_filter_blank_true_and_false():
+    """Test that blank lookup works with both True and False."""
+    query = (
+        ReadQuery(TrainingBatchSchema).filter(title__blank=True).filter(description__blank=False)
+    )
+
+    assert len(query.filters) == 2
+    assert query.filters[0] == {"title__blank": True}
+    assert query.filters[1] == {"description__blank": False}
+
+
+def test_readquery_filter_blank_true_builds_isnull_or_empty_condition():
+    """Test that blank=True builds (isnull() | == "") condition."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_isnull_result = MagicMock()
+    mock_eq_result = MagicMock()
+    mock_isnull = MagicMock(return_value=mock_isnull_result)
+    mock_field.isnull = mock_isnull
+    mock_field.__eq__ = MagicMock(return_value=mock_eq_result)
+    # Mock the OR operator
+    mock_isnull_result.__or__ = MagicMock(return_value=MagicMock())
+    mock_table.__getitem__ = MagicMock(return_value=mock_field)
+
+    parsed = ParsedLookup(field_name="title", lookup="blank", value=True)
+    condition = query._build_condition(mock_table, parsed)
+
+    assert condition is not None
+    mock_isnull.assert_called_once()
+    mock_field.__eq__.assert_called_once_with("")
+
+
+def test_readquery_filter_blank_false_builds_negated_condition():
+    """Test that blank=False builds negated (isnull() | == "") condition."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_isnull_result = MagicMock()
+    mock_eq_result = MagicMock()
+    mock_or_result = MagicMock()
+    mock_isnull = MagicMock(return_value=mock_isnull_result)
+    mock_field.isnull = mock_isnull
+    mock_field.__eq__ = MagicMock(return_value=mock_eq_result)
+    # Mock the OR operator
+    mock_isnull_result.__or__ = MagicMock(return_value=mock_or_result)
+    # Mock the negation operator
+    mock_or_result.__invert__ = MagicMock(return_value=MagicMock())
+    mock_table.__getitem__ = MagicMock(return_value=mock_field)
+
+    parsed = ParsedLookup(field_name="title", lookup="blank", value=False)
+    condition = query._build_condition(mock_table, parsed)
+
+    assert condition is not None
+    mock_isnull.assert_called_once()
+    mock_field.__eq__.assert_called_once_with("")
+    mock_or_result.__invert__.assert_called_once()
+
+
+def test_readquery_filter_blank_with_non_bool_raises_error():
+    """Test that blank lookup with non-boolean raises ValueError."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_table.__getitem__.return_value = mock_field
+
+    parsed = ParsedLookup(field_name="title", lookup="blank", value="yes")
+
+    with pytest.raises(ValueError, match="blank lookup requires a boolean value.*got str"):
+        query._build_condition(mock_table, parsed)
+
+
+def test_readquery_filter_mixed_lookups_with_null_blank():
+    """Test that null/blank lookups can be mixed with other lookups."""
+    query = (
+        ReadQuery(TrainingBatchSchema)
+        .filter(status__in=["Active", "Pending"])
+        .filter(end_date__isnull=True)
+        .filter(title__blank=False)
+        .filter(score__gt=50)
+    )
+
+    assert len(query.filters) == 4
+    assert query.filters[0] == {"status__in": ["Active", "Pending"]}
+    assert query.filters[1] == {"end_date__isnull": True}
+    assert query.filters[2] == {"title__blank": False}
+    assert query.filters[3] == {"score__gt": 50}

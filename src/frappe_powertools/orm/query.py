@@ -14,7 +14,7 @@ class ParsedLookup:
 
     Attributes:
         field_name: The field name (without lookup suffix)
-        lookup: The lookup type ("exact", "gt", "gte", "lt", "lte", "range", "in", "not_in")
+        lookup: The lookup type ("exact", "gt", "gte", "lt", "lte", "range", "in", "not_in", "isnull", "blank")
         value: The filter value
     """
 
@@ -218,10 +218,30 @@ class ReadQuery(Generic[TDoc]):
                 # Return a condition that is always true
                 return field == field
             return ~(field.isin(value_list))
+        elif lookup == "isnull":
+            if not isinstance(value, bool):
+                raise ValueError(
+                    f"isnull lookup requires a boolean value (True/False), got {type(value).__name__}"
+                )
+            if value:
+                return field.isnull()
+            else:
+                return field.notnull()
+        elif lookup == "blank":
+            if not isinstance(value, bool):
+                raise ValueError(
+                    f"blank lookup requires a boolean value (True/False), got {type(value).__name__}"
+                )
+            if value:
+                # blank=True: IS NULL OR = ""
+                return (field.isnull()) | (field == "")
+            else:
+                # blank=False: NOT (IS NULL OR = "")
+                return ~((field.isnull()) | (field == ""))
         else:
             raise ValueError(
                 f"Unsupported lookup '{lookup}' on field '{parsed.field_name}'. "
-                f"Supported lookups: exact, gt, gte, lt, lte, range, in, not_in"
+                f"Supported lookups: exact, gt, gte, lt, lte, range, in, not_in, isnull, blank"
             )
 
     def _build_frappe_query(self):
