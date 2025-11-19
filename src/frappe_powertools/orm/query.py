@@ -14,7 +14,7 @@ class ParsedLookup:
 
     Attributes:
         field_name: The field name (without lookup suffix)
-        lookup: The lookup type ("exact", "gt", "gte", "lt", "lte", "range", "in", "not_in", "isnull", "blank")
+        lookup: The lookup type ("exact", "gt", "gte", "lt", "lte", "range", "in", "not_in", "isnull", "blank", "contains", "startswith", "endswith")
         value: The filter value
     """
 
@@ -238,10 +238,28 @@ class ReadQuery(Generic[TDoc]):
             else:
                 # blank=False: NOT (IS NULL OR = "")
                 return ~((field.isnull()) | (field == ""))
+        elif lookup == "contains":
+            if not isinstance(value, str):
+                raise ValueError(
+                    f"contains lookup requires a string value, got {type(value).__name__}"
+                )
+            return field.like(f"%{value}%")
+        elif lookup == "startswith":
+            if not isinstance(value, str):
+                raise ValueError(
+                    f"startswith lookup requires a string value, got {type(value).__name__}"
+                )
+            return field.like(f"{value}%")
+        elif lookup == "endswith":
+            if not isinstance(value, str):
+                raise ValueError(
+                    f"endswith lookup requires a string value, got {type(value).__name__}"
+                )
+            return field.like(f"%{value}")
         else:
             raise ValueError(
                 f"Unsupported lookup '{lookup}' on field '{parsed.field_name}'. "
-                f"Supported lookups: exact, gt, gte, lt, lte, range, in, not_in, isnull, blank"
+                f"Supported lookups: exact, gt, gte, lt, lte, range, in, not_in, isnull, blank, contains, startswith, endswith"
             )
 
     def _build_frappe_query(self):

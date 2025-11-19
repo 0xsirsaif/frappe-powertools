@@ -803,3 +803,143 @@ def test_readquery_filter_mixed_lookups_with_null_blank():
     assert query.filters[1] == {"end_date__isnull": True}
     assert query.filters[2] == {"title__blank": False}
     assert query.filters[3] == {"score__gt": 50}
+
+
+def test_readquery_filter_contains_lookup():
+    """Test that contains lookup works correctly."""
+    query = ReadQuery(TrainingBatchSchema).filter(title__contains="python")
+
+    assert len(query.filters) == 1
+    assert query.filters[0] == {"title__contains": "python"}
+
+
+def test_readquery_filter_startswith_lookup():
+    """Test that startswith lookup works correctly."""
+    query = ReadQuery(TrainingBatchSchema).filter(code__startswith="PROG-")
+
+    assert len(query.filters) == 1
+    assert query.filters[0] == {"code__startswith": "PROG-"}
+
+
+def test_readquery_filter_endswith_lookup():
+    """Test that endswith lookup works correctly."""
+    query = ReadQuery(TrainingBatchSchema).filter(code__endswith="-2025")
+
+    assert len(query.filters) == 1
+    assert query.filters[0] == {"code__endswith": "-2025"}
+
+
+def test_readquery_filter_contains_builds_like_condition():
+    """Test that contains lookup builds like condition with wildcards."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_like = MagicMock(return_value=MagicMock())
+    mock_field.like = mock_like
+    mock_table.__getitem__ = MagicMock(return_value=mock_field)
+
+    parsed = ParsedLookup(field_name="title", lookup="contains", value="python")
+    condition = query._build_condition(mock_table, parsed)
+
+    assert condition is not None
+    mock_like.assert_called_once_with("%python%")
+
+
+def test_readquery_filter_startswith_builds_like_condition():
+    """Test that startswith lookup builds like condition with prefix wildcard."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_like = MagicMock(return_value=MagicMock())
+    mock_field.like = mock_like
+    mock_table.__getitem__ = MagicMock(return_value=mock_field)
+
+    parsed = ParsedLookup(field_name="code", lookup="startswith", value="PROG-")
+    condition = query._build_condition(mock_table, parsed)
+
+    assert condition is not None
+    mock_like.assert_called_once_with("PROG-%")
+
+
+def test_readquery_filter_endswith_builds_like_condition():
+    """Test that endswith lookup builds like condition with suffix wildcard."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_like = MagicMock(return_value=MagicMock())
+    mock_field.like = mock_like
+    mock_table.__getitem__ = MagicMock(return_value=mock_field)
+
+    parsed = ParsedLookup(field_name="code", lookup="endswith", value="-2025")
+    condition = query._build_condition(mock_table, parsed)
+
+    assert condition is not None
+    mock_like.assert_called_once_with("%-2025")
+
+
+def test_readquery_filter_contains_with_non_string_raises_error():
+    """Test that contains lookup with non-string raises ValueError."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_table.__getitem__.return_value = mock_field
+
+    parsed = ParsedLookup(field_name="title", lookup="contains", value=123)
+
+    with pytest.raises(ValueError, match="contains lookup requires a string value.*got int"):
+        query._build_condition(mock_table, parsed)
+
+
+def test_readquery_filter_startswith_with_non_string_raises_error():
+    """Test that startswith lookup with non-string raises ValueError."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_table.__getitem__.return_value = mock_field
+
+    parsed = ParsedLookup(field_name="code", lookup="startswith", value=123)
+
+    with pytest.raises(ValueError, match="startswith lookup requires a string value.*got int"):
+        query._build_condition(mock_table, parsed)
+
+
+def test_readquery_filter_endswith_with_non_string_raises_error():
+    """Test that endswith lookup with non-string raises ValueError."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_table.__getitem__.return_value = mock_field
+
+    parsed = ParsedLookup(field_name="code", lookup="endswith", value=123)
+
+    with pytest.raises(ValueError, match="endswith lookup requires a string value.*got int"):
+        query._build_condition(mock_table, parsed)
+
+
+def test_readquery_filter_mixed_lookups_with_string_patterns():
+    """Test that string pattern lookups can be mixed with other lookups."""
+    query = (
+        ReadQuery(TrainingBatchSchema)
+        .filter(title__contains="python")
+        .filter(code__startswith="PROG-")
+        .filter(status__in=["Active", "Pending"])
+        .filter(code__endswith="-2025")
+    )
+
+    assert len(query.filters) == 4
+    assert query.filters[0] == {"title__contains": "python"}
+    assert query.filters[1] == {"code__startswith": "PROG-"}
+    assert query.filters[2] == {"status__in": ["Active", "Pending"]}
+    assert query.filters[3] == {"code__endswith": "-2025"}
