@@ -68,6 +68,7 @@ class ReadQuery(Generic[TDoc]):
 
     schema: Type[TDoc]
     filters: List[dict[str, Any]] = field(default_factory=list)
+    exclude_filters: List[dict[str, Any]] = field(default_factory=list)
     order_by_fields: List[str] = field(default_factory=list)
     limit_value: int | None = None
     prefetch_fields: List[str] = field(default_factory=list)
@@ -88,6 +89,25 @@ class ReadQuery(Generic[TDoc]):
             query.filter(status="Active").filter(program="PROG-001")
         """
         self.filters.append(kwargs)
+        return self
+
+    def exclude(self, **kwargs: Any) -> ReadQuery[TDoc]:
+        """Exclude records matching the given conditions.
+
+        Multiple calls to exclude() are combined with AND logic.
+        Each exclude condition is negated (NOT condition).
+
+        Args:
+            **kwargs: Field name to value mappings for exclusion
+
+        Returns:
+            Self for method chaining
+
+        Example:
+            query.filter(status="Active").exclude(owner="guest")
+            query.exclude(status__in=["Cancelled", "Archived"])
+        """
+        self.exclude_filters.append(kwargs)
         return self
 
     def order_by(self, *fields: str) -> ReadQuery[TDoc]:
@@ -325,6 +345,14 @@ class ReadQuery(Generic[TDoc]):
                 parsed = _parse_lookup(key, value)
                 condition = self._build_condition(table, parsed)
                 query = query.where(condition)
+
+        # Apply exclude filters (negated conditions)
+        for exclude_dict in self.exclude_filters:
+            for key, value in exclude_dict.items():
+                parsed = _parse_lookup(key, value)
+                condition = self._build_condition(table, parsed)
+                # Negate the condition
+                query = query.where(~condition)
 
         # Apply order_by
         for field_spec in self.order_by_fields:

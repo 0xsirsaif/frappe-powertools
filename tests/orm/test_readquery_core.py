@@ -943,3 +943,103 @@ def test_readquery_filter_mixed_lookups_with_string_patterns():
     assert query.filters[1] == {"code__startswith": "PROG-"}
     assert query.filters[2] == {"status__in": ["Active", "Pending"]}
     assert query.filters[3] == {"code__endswith": "-2025"}
+
+
+def test_readquery_exclude_returns_self():
+    """Test that exclude() returns self for chaining."""
+    query = ReadQuery(TrainingBatchSchema)
+    result = query.exclude(status="Cancelled")
+
+    assert result is query
+
+
+def test_readquery_exclude_single_condition():
+    """Test that exclude() adds a single exclusion condition."""
+    query = ReadQuery(TrainingBatchSchema).exclude(status="Cancelled")
+
+    assert len(query.exclude_filters) == 1
+    assert query.exclude_filters[0] == {"status": "Cancelled"}
+
+
+def test_readquery_exclude_multiple_conditions():
+    """Test that multiple exclude() calls accumulate."""
+    query = ReadQuery(TrainingBatchSchema).exclude(status="Cancelled").exclude(owner="guest")
+
+    assert len(query.exclude_filters) == 2
+    assert query.exclude_filters[0] == {"status": "Cancelled"}
+    assert query.exclude_filters[1] == {"owner": "guest"}
+
+
+def test_readquery_exclude_single_condition_negates_expression():
+    """Test that exclude() negates the condition."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_eq_result = MagicMock()
+    mock_field.__eq__ = MagicMock(return_value=mock_eq_result)
+    mock_eq_result.__invert__ = MagicMock(return_value=MagicMock())
+    mock_table.__getitem__ = MagicMock(return_value=mock_field)
+
+    parsed = ParsedLookup(field_name="status", lookup="exact", value="Cancelled")
+    condition = query._build_condition(mock_table, parsed)
+    negated_condition = ~condition
+
+    assert negated_condition is not None
+    mock_field.__eq__.assert_called_once_with("Cancelled")
+    mock_eq_result.__invert__.assert_called_once()
+
+
+def test_readquery_filter_and_exclude_combined():
+    """Test that filter() and exclude() can be combined."""
+    query = ReadQuery(TrainingBatchSchema).filter(status="Active").exclude(owner="guest")
+
+    assert len(query.filters) == 1
+    assert len(query.exclude_filters) == 1
+    assert query.filters[0] == {"status": "Active"}
+    assert query.exclude_filters[0] == {"owner": "guest"}
+
+
+def test_readquery_exclude_with_lookup_suffixes():
+    """Test that exclude() works with lookup suffixes."""
+    query = (
+        ReadQuery(TrainingBatchSchema)
+        .exclude(status__in=["Cancelled", "Archived"])
+        .exclude(score__gt=100)
+        .exclude(title__contains="test")
+    )
+
+    assert len(query.exclude_filters) == 3
+    assert query.exclude_filters[0] == {"status__in": ["Cancelled", "Archived"]}
+    assert query.exclude_filters[1] == {"score__gt": 100}
+    assert query.exclude_filters[2] == {"title__contains": "test"}
+
+
+def test_readquery_exclude_builds_negated_conditions():
+    """Test that exclude() builds negated conditions in query."""
+    query = ReadQuery(TrainingBatchSchema).filter(status="Active").exclude(owner="guest")
+
+    with patch.object(query, "_build_frappe_query") as mock_build:
+        mock_query = MagicMock()
+        mock_build.return_value = mock_query
+
+        query.all()
+
+        mock_build.assert_called_once()
+
+
+def test_readquery_exclude_with_multiple_kwargs():
+    """Test that exclude() with multiple kwargs creates one exclude filter."""
+    query = ReadQuery(TrainingBatchSchema).exclude(status="Cancelled", owner="guest")
+
+    assert len(query.exclude_filters) == 1
+    assert query.exclude_filters[0] == {"status": "Cancelled", "owner": "guest"}
+
+
+def test_readquery_exclude_empty_filters():
+    """Test that queries with no exclude filters have empty exclude_filters list."""
+    query = ReadQuery(TrainingBatchSchema)
+
+    assert len(query.exclude_filters) == 0
+    assert query.exclude_filters == []
