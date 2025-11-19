@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Generic, List, Tuple, Type, TypeVar
+from typing import Any, Dict, Generic, List, Type, TypeVar
 
 from ..doctype_schema import DocModel
 
@@ -14,7 +14,7 @@ class ParsedLookup:
 
     Attributes:
         field_name: The field name (without lookup suffix)
-        lookup: The lookup type ("exact", "gt", "gte", "lt", "lte", "range")
+        lookup: The lookup type ("exact", "gt", "gte", "lt", "lte", "range", "in", "not_in")
         value: The filter value
     """
 
@@ -186,10 +186,42 @@ class ReadQuery(Generic[TDoc]):
                 )
             low, high = value
             return field.between(low, high)
+        elif lookup == "in":
+            if isinstance(value, str):
+                raise ValueError(
+                    f"in lookup requires an iterable (list, tuple, set), not a string. "
+                    f"Use exact lookup for string equality: {parsed.field_name}='{value}'"
+                )
+            if not hasattr(value, "__iter__"):
+                raise ValueError(
+                    f"in lookup requires an iterable (list, tuple, set), got {type(value).__name__}"
+                )
+            value_list = list(value)
+            if not value_list:
+                # Empty list: condition is always false (field IN () is always false in SQL)
+                # Return a condition that will never match by using an impossible condition
+                return field != field
+            return field.isin(value_list)
+        elif lookup == "not_in":
+            if isinstance(value, str):
+                raise ValueError(
+                    "not_in lookup requires an iterable (list, tuple, set), not a string. "
+                    "Use exact lookup with negation or exclude() for string inequality"
+                )
+            if not hasattr(value, "__iter__"):
+                raise ValueError(
+                    f"not_in lookup requires an iterable (list, tuple, set), got {type(value).__name__}"
+                )
+            value_list = list(value)
+            if not value_list:
+                # Empty list: condition is always true (field NOT IN () is always true in SQL)
+                # Return a condition that is always true
+                return field == field
+            return ~(field.isin(value_list))
         else:
             raise ValueError(
                 f"Unsupported lookup '{lookup}' on field '{parsed.field_name}'. "
-                f"Supported lookups: exact, gt, gte, lt, lte, range"
+                f"Supported lookups: exact, gt, gte, lt, lte, range, in, not_in"
             )
 
     def _build_frappe_query(self):
@@ -215,7 +247,7 @@ class ReadQuery(Generic[TDoc]):
         table = frappe.qb.DocType(doctype)
 
         # Get declared field names from the schema (excluding 'extras')
-        declared_fields = set(self.schema.model_fields.keys()) - {"extras"}
+        set(self.schema.model_fields.keys()) - {"extras"}
 
         # Build field list - select all fields using *
         # Frappe will handle column selection and permissions

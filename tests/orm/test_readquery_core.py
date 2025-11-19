@@ -458,3 +458,173 @@ def test_readquery_filter_mixed_exact_and_comparison_lookups():
     assert query.filters[1] == {"score__gt": 50}
     assert query.filters[2] == {"program": "PROG-001"}
     assert query.filters[3] == {"score__lte": 100}
+
+
+def test_readquery_filter_in_lookup():
+    """Test that in lookup works correctly."""
+    query = ReadQuery(TrainingBatchSchema).filter(status__in=["Active", "Pending", "Completed"])
+
+    assert len(query.filters) == 1
+    assert "status__in" in query.filters[0]
+    assert query.filters[0]["status__in"] == ["Active", "Pending", "Completed"]
+
+
+def test_readquery_filter_not_in_lookup():
+    """Test that not_in lookup works correctly."""
+    query = ReadQuery(TrainingBatchSchema).filter(status__not_in=["Cancelled", "Archived"])
+
+    assert len(query.filters) == 1
+    assert "status__not_in" in query.filters[0]
+    assert query.filters[0]["status__not_in"] == ["Cancelled", "Archived"]
+
+
+def test_readquery_filter_in_lookup_with_tuple():
+    """Test that in lookup works with tuples."""
+    query = ReadQuery(TrainingBatchSchema).filter(status__in=("Active", "Pending"))
+
+    assert len(query.filters) == 1
+    assert "status__in" in query.filters[0]
+    # Should convert tuple to list internally, but we store what was passed
+    assert isinstance(query.filters[0]["status__in"], tuple)
+
+
+def test_readquery_filter_in_lookup_builds_isin_condition():
+    """Test that in lookup builds isin condition."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_isin = MagicMock(return_value=MagicMock())
+    mock_field.isin = mock_isin
+    mock_table.__getitem__ = MagicMock(return_value=mock_field)
+
+    parsed = ParsedLookup(field_name="status", lookup="in", value=["Active", "Pending"])
+    condition = query._build_condition(mock_table, parsed)
+
+    assert condition is not None
+    # Verify isin was called
+    mock_isin.assert_called_once_with(["Active", "Pending"])
+
+
+def test_readquery_filter_not_in_lookup_builds_negated_isin_condition():
+    """Test that not_in lookup builds negated isin condition."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_isin_result = MagicMock()
+    mock_isin = MagicMock(return_value=mock_isin_result)
+    mock_field.isin = mock_isin
+    # Mock the negation operator
+    mock_isin_result.__invert__ = MagicMock(return_value=MagicMock())
+    mock_table.__getitem__ = MagicMock(return_value=mock_field)
+
+    parsed = ParsedLookup(field_name="status", lookup="not_in", value=["Cancelled", "Archived"])
+    condition = query._build_condition(mock_table, parsed)
+
+    assert condition is not None
+    # Verify isin was called and then negated
+    mock_isin.assert_called_once_with(["Cancelled", "Archived"])
+    mock_isin_result.__invert__.assert_called_once()
+
+
+def test_readquery_filter_in_with_string_raises_error():
+    """Test that in lookup with string raises ValueError."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_table.__getitem__.return_value = mock_field
+
+    parsed = ParsedLookup(field_name="status", lookup="in", value="Active")
+
+    with pytest.raises(ValueError, match="in lookup requires an iterable.*not a string"):
+        query._build_condition(mock_table, parsed)
+
+
+def test_readquery_filter_not_in_with_string_raises_error():
+    """Test that not_in lookup with string raises ValueError."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_table.__getitem__.return_value = mock_field
+
+    parsed = ParsedLookup(field_name="status", lookup="not_in", value="Cancelled")
+
+    with pytest.raises(ValueError, match="not_in lookup requires an iterable.*not a string"):
+        query._build_condition(mock_table, parsed)
+
+
+def test_readquery_filter_in_with_non_iterable_raises_error():
+    """Test that in lookup with non-iterable raises ValueError."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_table.__getitem__.return_value = mock_field
+
+    parsed = ParsedLookup(field_name="status", lookup="in", value=123)
+
+    with pytest.raises(ValueError, match="in lookup requires an iterable.*got int"):
+        query._build_condition(mock_table, parsed)
+
+
+def test_readquery_filter_in_with_empty_list():
+    """Test that in lookup with empty list returns always-false condition."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_ne = MagicMock(return_value=MagicMock())
+    mock_field.__ne__ = mock_ne
+    mock_table.__getitem__ = MagicMock(return_value=mock_field)
+
+    parsed = ParsedLookup(field_name="status", lookup="in", value=[])
+    condition = query._build_condition(mock_table, parsed)
+
+    assert condition is not None
+    # Should use field != field for always false
+    mock_ne.assert_called_once_with(mock_field)
+
+
+def test_readquery_filter_not_in_with_empty_list():
+    """Test that not_in lookup with empty list returns always-true condition."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_eq = MagicMock(return_value=MagicMock())
+    mock_field.__eq__ = mock_eq
+    mock_table.__getitem__ = MagicMock(return_value=mock_field)
+
+    parsed = ParsedLookup(field_name="status", lookup="not_in", value=[])
+    condition = query._build_condition(mock_table, parsed)
+
+    assert condition is not None
+    # Should use field == field for always true
+    mock_eq.assert_called_once_with(mock_field)
+
+
+def test_readquery_filter_mixed_lookups_with_membership():
+    """Test that membership lookups can be mixed with other lookups."""
+    query = (
+        ReadQuery(TrainingBatchSchema)
+        .filter(status__in=["Active", "Pending"])
+        .filter(score__gt=50)
+        .filter(program__not_in=["PROG-OLD", "PROG-DEPRECATED"])
+        .filter(score__lte=100)
+    )
+
+    assert len(query.filters) == 4
+    assert query.filters[0] == {"status__in": ["Active", "Pending"]}
+    assert query.filters[1] == {"score__gt": 50}
+    assert query.filters[2] == {"program__not_in": ["PROG-OLD", "PROG-DEPRECATED"]}
+    assert query.filters[3] == {"score__lte": 100}
