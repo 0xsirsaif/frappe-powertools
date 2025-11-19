@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -20,6 +20,7 @@ class TrainingBatchSchema(DocModel):
     status: str
     start_date: str
     program: str
+    score: int | None = None
 
 
 def test_readquery_chaining_builds_internal_state():
@@ -277,3 +278,183 @@ def test_attach_manager_returns_schema_class():
     # Should be able to use the class normally
     assert MySchema.Meta.doctype == "My Schema 2"
     assert hasattr(MySchema, "objects")
+
+
+def test_readquery_single_filter_with_multiple_kwargs():
+    """Test that multiple keyword args in a single filter() call combine with AND."""
+    query = ReadQuery(TrainingBatchSchema).filter(status="Active", program="PROG-001")
+
+    assert len(query.filters) == 1
+    assert query.filters[0] == {"status": "Active", "program": "PROG-001"}
+
+
+def test_readquery_mixed_single_and_multiple_filter_calls():
+    """Test that mixing single and multiple filter calls works correctly."""
+    query = (
+        ReadQuery(TrainingBatchSchema)
+        .filter(status="Active", program="PROG-001")
+        .filter(name="BATCH-001")
+    )
+
+    assert len(query.filters) == 2
+    assert query.filters[0] == {"status": "Active", "program": "PROG-001"}
+    assert query.filters[1] == {"name": "BATCH-001"}
+
+
+def test_readquery_filter_with_double_underscore_field_name():
+    """Test that fields with double underscores are treated as literal field names."""
+    query = ReadQuery(TrainingBatchSchema).filter(**{"field__name": "value"})
+
+    assert len(query.filters) == 1
+    assert "field__name" in query.filters[0]
+    assert query.filters[0]["field__name"] == "value"
+
+
+def test_readquery_filters_use_equality_semantics():
+    """Test that filters use equality semantics (baseline behavior)."""
+    query = ReadQuery(TrainingBatchSchema).filter(status="Active").filter(program="PROG-001")
+
+    # Verify filters are stored correctly (equality semantics - no lookup suffixes)
+    assert len(query.filters) == 2
+    assert query.filters[0] == {"status": "Active"}
+    assert query.filters[1] == {"program": "PROG-001"}
+
+
+def test_readquery_empty_filters():
+    """Test that queries with no filters have empty filter list."""
+    query = ReadQuery(TrainingBatchSchema)
+
+    # Verify no filters are stored
+    assert len(query.filters) == 0
+    assert query.filters == []
+
+
+def test_readquery_filter_exact_lookup_still_works():
+    """Test that filter without lookup suffix still works (exact lookup)."""
+    query = ReadQuery(TrainingBatchSchema).filter(status="Active")
+
+    assert len(query.filters) == 1
+    assert query.filters[0] == {"status": "Active"}
+
+
+def test_readquery_filter_comparison_lookups():
+    """Test that comparison lookups (gt, gte, lt, lte) work correctly."""
+    query = (
+        ReadQuery(TrainingBatchSchema)
+        .filter(score__gt=80)
+        .filter(score__gte=50)
+        .filter(score__lt=100)
+        .filter(score__lte=90)
+    )
+
+    assert len(query.filters) == 4
+    assert query.filters[0] == {"score__gt": 80}
+    assert query.filters[1] == {"score__gte": 50}
+    assert query.filters[2] == {"score__lt": 100}
+    assert query.filters[3] == {"score__lte": 90}
+
+
+def test_readquery_filter_range_lookup():
+    """Test that range lookup works correctly."""
+    from datetime import date
+
+    query = ReadQuery(TrainingBatchSchema).filter(
+        start_date__range=(date(2025, 1, 1), date(2025, 3, 31))
+    )
+
+    assert len(query.filters) == 1
+    assert "start_date__range" in query.filters[0]
+    range_value = query.filters[0]["start_date__range"]
+    assert isinstance(range_value, tuple)
+    assert len(range_value) == 2
+    assert range_value[0] == date(2025, 1, 1)
+    assert range_value[1] == date(2025, 3, 31)
+
+
+def test_readquery_filter_comparison_lookups_build_conditions():
+    """Test that comparison lookups build correct PyPika conditions."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+
+    # Create mock field that supports comparison operators
+    def create_mock_field():
+        mock_field = MagicMock()
+        # Make comparison operators return mock conditions
+        mock_field.__gt__ = MagicMock(return_value=MagicMock())
+        mock_field.__ge__ = MagicMock(return_value=MagicMock())
+        mock_field.__lt__ = MagicMock(return_value=MagicMock())
+        mock_field.__le__ = MagicMock(return_value=MagicMock())
+        mock_field.__eq__ = MagicMock(return_value=MagicMock())
+        mock_field.between = MagicMock(return_value=MagicMock())
+        return mock_field
+
+    mock_table.__getitem__ = MagicMock(side_effect=lambda key: create_mock_field())
+
+    # Test gt lookup
+    parsed_gt = ParsedLookup(field_name="score", lookup="gt", value=80)
+    condition_gt = query._build_condition(mock_table, parsed_gt)
+    assert condition_gt is not None
+
+    # Test lte lookup
+    parsed_lte = ParsedLookup(field_name="score", lookup="lte", value=100)
+    condition_lte = query._build_condition(mock_table, parsed_lte)
+    assert condition_lte is not None
+
+    # Test exact lookup
+    parsed_exact = ParsedLookup(field_name="status", lookup="exact", value="Active")
+    condition_exact = query._build_condition(mock_table, parsed_exact)
+    assert condition_exact is not None
+
+    # Test range lookup
+    parsed_range = ParsedLookup(field_name="score", lookup="range", value=(10, 20))
+    condition_range = query._build_condition(mock_table, parsed_range)
+    assert condition_range is not None
+
+
+def test_readquery_filter_unknown_lookup_raises_error():
+    """Test that unknown lookup raises ValueError."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_table.__getitem__.return_value = mock_field
+
+    parsed = ParsedLookup(field_name="score", lookup="foo", value=10)
+
+    with pytest.raises(ValueError, match="Unsupported lookup 'foo' on field 'score'"):
+        query._build_condition(mock_table, parsed)
+
+
+def test_readquery_filter_range_invalid_value_raises_error():
+    """Test that range lookup with invalid value raises ValueError."""
+    from frappe_powertools.orm.query import ParsedLookup
+
+    query = ReadQuery(TrainingBatchSchema)
+    mock_table = MagicMock()
+    mock_field = MagicMock()
+    mock_table.__getitem__.return_value = mock_field
+
+    parsed = ParsedLookup(field_name="score", lookup="range", value=(10,))
+
+    with pytest.raises(ValueError, match="range lookup requires a tuple or list of 2 values"):
+        query._build_condition(mock_table, parsed)
+
+
+def test_readquery_filter_mixed_exact_and_comparison_lookups():
+    """Test that exact and comparison lookups can be mixed."""
+    query = (
+        ReadQuery(TrainingBatchSchema)
+        .filter(status="Active")
+        .filter(score__gt=50)
+        .filter(program="PROG-001")
+        .filter(score__lte=100)
+    )
+
+    assert len(query.filters) == 4
+    assert query.filters[0] == {"status": "Active"}
+    assert query.filters[1] == {"score__gt": 50}
+    assert query.filters[2] == {"program": "PROG-001"}
+    assert query.filters[3] == {"score__lte": 100}

@@ -1,11 +1,51 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Generic, List, Type, TypeVar
+from typing import Any, Dict, Generic, List, Tuple, Type, TypeVar
 
 from ..doctype_schema import DocModel
 
 TDoc = TypeVar("TDoc", bound=DocModel)
+
+
+@dataclass
+class ParsedLookup:
+    """Parsed lookup from filter key.
+
+    Attributes:
+        field_name: The field name (without lookup suffix)
+        lookup: The lookup type ("exact", "gt", "gte", "lt", "lte", "range")
+        value: The filter value
+    """
+
+    field_name: str
+    lookup: str
+    value: Any
+
+
+def _parse_lookup(key: str, value: Any) -> ParsedLookup:
+    """Parse a filter key into field name and lookup type.
+
+    Args:
+        key: Filter key (e.g., "status", "score__gt", "field__name")
+        value: Filter value
+
+    Returns:
+        ParsedLookup with field_name, lookup, and value
+
+    Examples:
+        >>> _parse_lookup("status", "Active")
+        ParsedLookup(field_name='status', lookup='exact', value='Active')
+        >>> _parse_lookup("score__gt", 80)
+        ParsedLookup(field_name='score', lookup='gt', value=80)
+        >>> _parse_lookup("field__name", "value")
+        ParsedLookup(field_name='field', lookup='name', value='value')
+    """
+    if "__" in key:
+        field_name, lookup = key.rsplit("__", 1)
+    else:
+        field_name, lookup = key, "exact"
+    return ParsedLookup(field_name=field_name, lookup=lookup, value=value)
 
 
 @dataclass
@@ -112,6 +152,46 @@ class ReadQuery(Generic[TDoc]):
         self.select_related_fields.extend(fields)
         return self
 
+    def _build_condition(self, table, parsed: ParsedLookup):
+        """Build a PyPika condition from a parsed lookup.
+
+        Args:
+            table: PyPika table object
+            parsed: ParsedLookup instance
+
+        Returns:
+            PyPika condition expression
+
+        Raises:
+            ValueError: If lookup type is not supported
+        """
+        field = table[parsed.field_name]
+        lookup = parsed.lookup
+        value = parsed.value
+
+        if lookup == "exact":
+            return field == value
+        elif lookup == "gt":
+            return field > value
+        elif lookup == "gte":
+            return field >= value
+        elif lookup == "lt":
+            return field < value
+        elif lookup == "lte":
+            return field <= value
+        elif lookup == "range":
+            if not isinstance(value, (tuple, list)) or len(value) != 2:
+                raise ValueError(
+                    f"range lookup requires a tuple or list of 2 values, got {type(value).__name__}"
+                )
+            low, high = value
+            return field.between(low, high)
+        else:
+            raise ValueError(
+                f"Unsupported lookup '{lookup}' on field '{parsed.field_name}'. "
+                f"Supported lookups: exact, gt, gte, lt, lte, range"
+            )
+
     def _build_frappe_query(self):
         """Build a Frappe Query Builder query from accumulated parameters.
 
@@ -171,10 +251,10 @@ class ReadQuery(Generic[TDoc]):
 
         # Apply filters
         for filter_dict in self.filters:
-            for field_name, value in filter_dict.items():
-                # Simple equality filter for now
-                # TODO: Support more complex filters in future phases
-                query = query.where(table[field_name] == value)
+            for key, value in filter_dict.items():
+                parsed = _parse_lookup(key, value)
+                condition = self._build_condition(table, parsed)
+                query = query.where(condition)
 
         # Apply order_by
         for field_spec in self.order_by_fields:
