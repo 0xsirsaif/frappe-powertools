@@ -1043,3 +1043,286 @@ def test_readquery_exclude_empty_filters():
 
     assert len(query.exclude_filters) == 0
     assert query.exclude_filters == []
+
+
+def test_readquery_count_returns_correct_count():
+    """Test that count() returns the correct number of matching records."""
+    query = ReadQuery(TrainingBatchSchema).filter(status="Active")
+
+    # Mock the count() method to return expected count
+    with patch.object(query, "count") as mock_count:
+        mock_count.return_value = 42
+
+        count = query.count()
+
+        # Verify the output
+        assert count == 42
+        assert isinstance(count, int)
+
+
+def test_readquery_count_with_filters_applies_correctly():
+    """Test that count() applies filters correctly and returns filtered count."""
+    query = ReadQuery(TrainingBatchSchema).filter(status="Active").filter(score__gt=50)
+
+    # Mock the count() method to return expected count with filters
+    with patch.object(query, "count") as mock_count:
+        mock_count.return_value = 15
+
+        count = query.count()
+
+        # Verify the output
+        assert count == 15
+        assert isinstance(count, int)
+
+
+def test_readquery_order_by_ascending_returns_ordered_results():
+    """Test that order_by() with ascending order returns results in correct order."""
+    query = ReadQuery(TrainingBatchSchema).order_by("status")
+
+    # Mock query execution with ordered results (complete schema data)
+    with patch.object(query, "_build_frappe_query") as mock_build:
+        mock_query = MagicMock()
+        mock_query.run = MagicMock(
+            return_value=[
+                {
+                    "name": "BATCH-001",
+                    "status": "Active",
+                    "start_date": "2024-01-01",
+                    "program": "PROG-001",
+                },
+                {
+                    "name": "BATCH-002",
+                    "status": "Active",
+                    "start_date": "2024-01-02",
+                    "program": "PROG-001",
+                },
+                {
+                    "name": "BATCH-003",
+                    "status": "Pending",
+                    "start_date": "2024-01-03",
+                    "program": "PROG-002",
+                },
+            ]
+        )
+        mock_build.return_value = mock_query
+
+        results = query.all()
+
+        # Verify results are returned (order verification would require actual DB)
+        assert len(results) == 3
+        assert all(isinstance(r, TrainingBatchSchema) for r in results)
+        # Verify order_by was applied (status field used)
+        assert query.order_by_fields == ["status"]
+
+
+def test_readquery_order_by_descending_returns_ordered_results():
+    """Test that order_by() with descending order returns results in correct order."""
+    query = ReadQuery(TrainingBatchSchema).order_by("-name")
+
+    # Mock query execution with ordered results (complete schema data)
+    with patch.object(query, "_build_frappe_query") as mock_build:
+        mock_query = MagicMock()
+        mock_query.run = MagicMock(
+            return_value=[
+                {
+                    "name": "BATCH-003",
+                    "status": "Pending",
+                    "start_date": "2024-01-03",
+                    "program": "PROG-002",
+                },
+                {
+                    "name": "BATCH-002",
+                    "status": "Active",
+                    "start_date": "2024-01-02",
+                    "program": "PROG-001",
+                },
+                {
+                    "name": "BATCH-001",
+                    "status": "Active",
+                    "start_date": "2024-01-01",
+                    "program": "PROG-001",
+                },
+            ]
+        )
+        mock_build.return_value = mock_query
+
+        results = query.all()
+
+        # Verify results are returned
+        assert len(results) == 3
+        assert all(isinstance(r, TrainingBatchSchema) for r in results)
+        # Verify descending order was applied
+        assert query.order_by_fields == ["-name"]
+
+
+def test_readquery_order_by_multiple_fields_returns_ordered_results():
+    """Test that order_by() with multiple fields returns results in correct order."""
+    query = ReadQuery(TrainingBatchSchema).order_by("status", "-name")
+
+    # Mock query execution (complete schema data)
+    with patch.object(query, "_build_frappe_query") as mock_build:
+        mock_query = MagicMock()
+        mock_query.run = MagicMock(
+            return_value=[
+                {
+                    "name": "BATCH-003",
+                    "status": "Active",
+                    "start_date": "2024-01-03",
+                    "program": "PROG-001",
+                },
+                {
+                    "name": "BATCH-002",
+                    "status": "Active",
+                    "start_date": "2024-01-02",
+                    "program": "PROG-001",
+                },
+                {
+                    "name": "BATCH-001",
+                    "status": "Pending",
+                    "start_date": "2024-01-01",
+                    "program": "PROG-002",
+                },
+            ]
+        )
+        mock_build.return_value = mock_query
+
+        results = query.all()
+
+        # Verify results are returned
+        assert len(results) == 3
+        assert all(isinstance(r, TrainingBatchSchema) for r in results)
+        # Verify multiple order_by fields were applied
+        assert query.order_by_fields == ["status", "-name"]
+
+
+def test_readquery_filter_boolean_field_true_returns_matching_records():
+    """Test that filtering by Check field with True returns only matching records."""
+
+    class CheckFieldSchema(DocModel):
+        """Schema with Check field for testing."""
+
+        class Meta:
+            doctype = "Test DocType"
+
+        name: str
+        is_paid: bool = False
+        is_complete: bool = False
+
+    query = ReadQuery(CheckFieldSchema).filter(is_paid=True)
+
+    # Mock query execution - should return only records where is_paid=1 (True)
+    with patch.object(query, "_build_frappe_query") as mock_build:
+        mock_query = MagicMock()
+        mock_query.run = MagicMock(
+            return_value=[
+                {"name": "REQ-001", "is_paid": True, "is_complete": False},
+                {"name": "REQ-002", "is_paid": True, "is_complete": True},
+            ]
+        )
+        mock_build.return_value = mock_query
+
+        results = query.all()
+
+        # Verify output: all returned records should have is_paid=True
+        assert len(results) == 2
+        assert all(isinstance(r, CheckFieldSchema) for r in results)
+        assert all(r.is_paid is True for r in results)
+
+
+def test_readquery_filter_boolean_field_false_returns_matching_records():
+    """Test that filtering by Check field with False returns only matching records."""
+
+    class CheckFieldSchema(DocModel):
+        """Schema with Check field for testing."""
+
+        class Meta:
+            doctype = "Test DocType"
+
+        name: str
+        is_paid: bool = False
+
+    query = ReadQuery(CheckFieldSchema).filter(is_paid=False)
+
+    # Mock query execution - should return only records where is_paid=0 (False)
+    with patch.object(query, "_build_frappe_query") as mock_build:
+        mock_query = MagicMock()
+        mock_query.run = MagicMock(
+            return_value=[
+                {"name": "REQ-003", "is_paid": False},
+                {"name": "REQ-004", "is_paid": False},
+            ]
+        )
+        mock_build.return_value = mock_query
+
+        results = query.all()
+
+        # Verify output: all returned records should have is_paid=False
+        assert len(results) == 2
+        assert all(isinstance(r, CheckFieldSchema) for r in results)
+        assert all(r.is_paid is False for r in results)
+
+
+def test_readquery_filter_multiple_boolean_fields_returns_matching_records():
+    """Test that filtering by multiple Check fields returns only matching records."""
+
+    class CheckFieldSchema(DocModel):
+        """Schema with Check field for testing."""
+
+        class Meta:
+            doctype = "Test DocType"
+
+        name: str
+        is_paid: bool = False
+        is_complete: bool = False
+
+    query = ReadQuery(CheckFieldSchema).filter(is_paid=True, is_complete=True)
+
+    # Mock query execution
+    with patch.object(query, "_build_frappe_query") as mock_build:
+        mock_query = MagicMock()
+        mock_query.run = MagicMock(
+            return_value=[
+                {"name": "REQ-001", "is_paid": True, "is_complete": True},
+            ]
+        )
+        mock_build.return_value = mock_query
+
+        results = query.all()
+
+        # Verify output: all returned records should match both conditions
+        assert len(results) == 1
+        assert results[0].is_paid is True
+        assert results[0].is_complete is True
+
+
+def test_readquery_exclude_boolean_field_returns_correct_records():
+    """Test that exclude() with Check field returns records that don't match."""
+
+    class CheckFieldSchema(DocModel):
+        """Schema with Check field for testing."""
+
+        class Meta:
+            doctype = "Test DocType"
+
+        name: str
+        is_paid: bool = False
+
+    query = ReadQuery(CheckFieldSchema).exclude(is_paid=False)
+
+    # Mock query execution - should return records where is_paid != 0 (i.e., is_paid=1)
+    with patch.object(query, "_build_frappe_query") as mock_build:
+        mock_query = MagicMock()
+        mock_query.run = MagicMock(
+            return_value=[
+                {"name": "REQ-001", "is_paid": True},
+                {"name": "REQ-002", "is_paid": True},
+            ]
+        )
+        mock_build.return_value = mock_query
+
+        results = query.all()
+
+        # Verify output: all returned records should have is_paid=True (excluded False)
+        assert len(results) == 2
+        assert all(isinstance(r, CheckFieldSchema) for r in results)
+        assert all(r.is_paid is True for r in results)

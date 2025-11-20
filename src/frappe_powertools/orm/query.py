@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Generic, List, Type, TypeVar
+from typing import Any, Dict, Generic, List, Type, TypeVar, get_origin
 
 from ..doctype_schema import DocModel
 
@@ -189,6 +189,22 @@ class ReadQuery(Generic[TDoc]):
         lookup = parsed.lookup
         value = parsed.value
 
+        # Convert Python boolean to int for Check fields (Frappe stores as 0/1)
+        # Check if the field is typed as bool in the schema
+        if parsed.field_name in self.schema.model_fields:
+            field_info = self.schema.model_fields[parsed.field_name]
+            annotation = field_info.annotation
+            # Check if the field type is bool (Check field in Frappe)
+            # Handle both direct bool and Optional[bool] (bool | None) types
+            origin = get_origin(annotation)
+            is_bool_field = (
+                annotation is bool or (origin is None and annotation is bool) or origin is bool
+            )
+            if is_bool_field and isinstance(value, bool):
+                # Convert True/False to 1/0 for exact lookups
+                if lookup == "exact":
+                    value = 1 if value else 0
+
         if lookup == "exact":
             return field == value
         elif lookup == "gt":
@@ -357,10 +373,12 @@ class ReadQuery(Generic[TDoc]):
         # Apply order_by
         for field_spec in self.order_by_fields:
             # Handle descending order (prefix with "-")
+            # Extract field_name before the if/else to avoid UnboundLocalError
             if field_spec.startswith("-"):
                 field_name = field_spec[1:]
                 query = query.orderby(table[field_name], order=Order.desc)
             else:
+                field_name = field_spec
                 query = query.orderby(table[field_name], order=Order.asc)
 
         # Apply limit
@@ -509,6 +527,50 @@ class ReadQuery(Generic[TDoc]):
         self.limit_value = 1
         results = self.all()
         return results[0] if results else None
+
+    def count(self) -> int:
+        """Execute the query and return the count of matching records.
+
+        This is more efficient than len(query.all()) as it only counts records
+        without fetching them into memory.
+
+        Returns:
+            Integer count of matching records
+
+        Example:
+            count = query.filter(status="Active").count()
+        """
+        try:
+            import frappe
+            from frappe.database.query import Count
+        except ImportError:
+            raise ImportError(
+                "Frappe is required for query execution. "
+                "Install frappe or run in a Frappe environment."
+            )
+
+        doctype = self.schema.Meta.doctype
+        table = frappe.qb.DocType(doctype)
+
+        # Build count query with same filters/excludes as the main query
+        count_query = frappe.qb.from_(table).select(Count("*").as_("count"))
+
+        # Apply filters
+        for filter_dict in self.filters:
+            for key, value in filter_dict.items():
+                parsed = _parse_lookup(key, value)
+                condition = self._build_condition(table, parsed)
+                count_query = count_query.where(condition)
+
+        # Apply exclude filters (negated conditions)
+        for exclude_dict in self.exclude_filters:
+            for key, value in exclude_dict.items():
+                parsed = _parse_lookup(key, value)
+                condition = self._build_condition(table, parsed)
+                count_query = count_query.where(~condition)
+
+        result = count_query.run(as_dict=True)
+        return result[0]["count"] if result else 0
 
 
 __all__ = ["ReadQuery", "TDoc"]
