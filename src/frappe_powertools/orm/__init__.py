@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import Type
 
 from ..doctype_schema import DocModel
-from .query import ReadQuery
+from .query import Q, ReadQuery
 
-__all__ = ["DocModel", "ReadQuery", "query_for", "attach_manager"]
+__all__ = ["DocModel", "Q", "ReadQuery", "query_for", "attach_manager"]
 
 
 def query_for(schema: Type[DocModel]) -> ReadQuery[DocModel]:

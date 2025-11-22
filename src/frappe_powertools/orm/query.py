@@ -1,11 +1,110 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Generic, List, Type, TypeVar, get_origin
+from typing import Any, Dict, Generic, List, Literal, Type, TypeVar, get_origin
 
 from ..doctype_schema import DocModel
 
 TDoc = TypeVar("TDoc", bound=DocModel)
+
+
+class Q:
+    """Query object for building complex boolean logic expressions.
+
+    Q objects can be combined using & (AND), | (OR), and ~ (NOT) operators
+    to create nested boolean logic trees.
+
+    Examples:
+        # Simple leaf node
+        q = Q(status="Active")
+
+        # AND combination
+        q = Q(status="Active") & Q(owner="saif")
+
+        # OR combination
+        q = Q(status="Active") | Q(status="Pending")
+
+        # Negation
+        q = ~Q(status="Cancelled")
+
+        # Nested combinations
+        q = (Q(status="Active") | Q(status="Pending")) & Q(is_online=True)
+    """
+
+    def __init__(self, **kwargs: Any):
+        """Create a Q object.
+
+        Args:
+            **kwargs: Field name to value mappings for filtering.
+                     If provided, creates a leaf node with these conditions.
+                     If empty, creates an empty Q object.
+        """
+        # children can be either dict[str, Any] (leaf) or Q instances (subtrees)
+        self.children: list[Q | dict[str, Any]] = []
+        if kwargs:
+            self.children.append(kwargs)
+        self.connector: Literal["AND", "OR"] = "AND"
+        self.negated: bool = False
+
+    def _combine(self, other: Q, connector: Literal["AND", "OR"]) -> Q:
+        """Combine this Q with another Q using the specified connector.
+
+        Args:
+            other: Another Q object to combine with
+            connector: Either "AND" or "OR"
+
+        Returns:
+            A new Q object with both Qs as children
+        """
+        q = Q()
+        q.children = [self, other]
+        q.connector = connector
+        q.negated = False
+        return q
+
+    def __and__(self, other: Q) -> Q:
+        """Combine two Q objects with AND logic.
+
+        Args:
+            other: Another Q object
+
+        Returns:
+            A new Q object with AND connector
+        """
+        return self._combine(other, "AND")
+
+    def __or__(self, other: Q) -> Q:
+        """Combine two Q objects with OR logic.
+
+        Args:
+            other: Another Q object
+
+        Returns:
+            A new Q object with OR connector
+        """
+        return self._combine(other, "OR")
+
+    def __invert__(self) -> Q:
+        """Negate this Q object.
+
+        Returns:
+            A new Q object with negated flag flipped
+        """
+        q = Q()
+        q.children = [self]
+        q.connector = "AND"
+        q.negated = not self.negated
+        return q
+
+    def __repr__(self) -> str:
+        """Return a string representation of the Q object."""
+        connector_str = self.connector
+        if self.negated:
+            connector_str = f"NOT {connector_str}"
+        children_str = ", ".join(
+            repr(child) if isinstance(child, Q) else str(child) for child in self.children
+        )
+        return f"Q({connector_str}: [{children_str}])"
 
 
 @dataclass
@@ -69,17 +168,21 @@ class ReadQuery(Generic[TDoc]):
     schema: Type[TDoc]
     filters: List[dict[str, Any]] = field(default_factory=list)
     exclude_filters: List[dict[str, Any]] = field(default_factory=list)
+    filter_qs: List[Q] = field(default_factory=list)
+    exclude_qs: List[Q] = field(default_factory=list)
     order_by_fields: List[str] = field(default_factory=list)
     limit_value: int | None = None
     prefetch_fields: List[str] = field(default_factory=list)
     select_related_fields: List[str] = field(default_factory=list)
 
-    def filter(self, **kwargs: Any) -> ReadQuery[TDoc]:
+    def filter(self, *conditions: Q, **kwargs: Any) -> ReadQuery[TDoc]:
         """Add filter conditions to the query.
 
         Multiple calls to filter() are combined with AND logic.
+        Can accept Q objects as positional arguments and/or kwargs.
 
         Args:
+            *conditions: Q objects to combine with AND logic
             **kwargs: Field name to value mappings for filtering
 
         Returns:
@@ -87,17 +190,30 @@ class ReadQuery(Generic[TDoc]):
 
         Example:
             query.filter(status="Active").filter(program="PROG-001")
+            query.filter(Q(status="Active") | Q(status="Pending"), is_online=True)
         """
-        self.filters.append(kwargs)
+        # Store Q objects
+        for condition in conditions:
+            if not isinstance(condition, Q):
+                raise TypeError(
+                    f"filter() positional arguments must be Q objects, got {type(condition)}"
+                )
+            self.filter_qs.append(condition)
+
+        # Store kwargs (backwards compatible)
+        if kwargs:
+            self.filters.append(kwargs)
         return self
 
-    def exclude(self, **kwargs: Any) -> ReadQuery[TDoc]:
+    def exclude(self, *conditions: Q, **kwargs: Any) -> ReadQuery[TDoc]:
         """Exclude records matching the given conditions.
 
         Multiple calls to exclude() are combined with AND logic.
         Each exclude condition is negated (NOT condition).
+        Can accept Q objects as positional arguments and/or kwargs.
 
         Args:
+            *conditions: Q objects to combine with AND logic (will be negated)
             **kwargs: Field name to value mappings for exclusion
 
         Returns:
@@ -106,8 +222,19 @@ class ReadQuery(Generic[TDoc]):
         Example:
             query.filter(status="Active").exclude(owner="guest")
             query.exclude(status__in=["Cancelled", "Archived"])
+            query.exclude(Q(status="Cancelled") | Q(status="Archived"))
         """
-        self.exclude_filters.append(kwargs)
+        # Store Q objects
+        for condition in conditions:
+            if not isinstance(condition, Q):
+                raise TypeError(
+                    f"exclude() positional arguments must be Q objects, got {type(condition)}"
+                )
+            self.exclude_qs.append(condition)
+
+        # Store kwargs (backwards compatible)
+        if kwargs:
+            self.exclude_filters.append(kwargs)
         return self
 
     def order_by(self, *fields: str) -> ReadQuery[TDoc]:
@@ -171,6 +298,79 @@ class ReadQuery(Generic[TDoc]):
         """
         self.select_related_fields.extend(fields)
         return self
+
+    def _q_to_criterion(self, table, q: Q):
+        """Convert a Q tree into a single criterion expression.
+
+        - Leaves (dict[str, Any]) are converted via _parse_lookup + _build_condition.
+        - Sub-Qs are recursively converted and combined using & / |.
+        - Negation is applied via ~.
+        - Double negation is optimized: ~(~Q) simplifies to Q.
+
+        Args:
+            table: PyPika table object
+            q: Q object to convert
+
+        Returns:
+            PyPika condition expression
+
+        Raises:
+            ValueError: If Q object has no children
+        """
+        if not q.children:
+            raise ValueError("Cannot convert empty Q object to criterion")
+
+        # Optimize double negation: if we have a single child Q with opposite negated flag,
+        # unwrap it (this handles ~(~Q(...)) case)
+        if len(q.children) == 1 and isinstance(q.children[0], Q):
+            child_q = q.children[0]
+            # If parent and child have opposite negated flags, they cancel out
+            if q.negated != child_q.negated:
+                # Unwrap: process the child Q's children directly, preserving the child's connector
+                # This effectively removes one level of nesting when negations cancel
+                unwrapped_q = Q()
+                unwrapped_q.children = child_q.children
+                unwrapped_q.connector = child_q.connector
+                unwrapped_q.negated = False  # Negations have cancelled out
+                return self._q_to_criterion(table, unwrapped_q)
+
+        child_conditions = []
+
+        for child in q.children:
+            if isinstance(child, dict):
+                # Leaf node: parse each key/value and build conditions
+                for key, value in child.items():
+                    parsed = _parse_lookup(key, value)
+                    condition = self._build_condition(table, parsed)
+                    child_conditions.append(condition)
+            elif isinstance(child, Q):
+                # Sub-tree: recursively convert
+                condition = self._q_to_criterion(table, child)
+                child_conditions.append(condition)
+            else:
+                raise TypeError(f"Unexpected child type in Q: {type(child)}")
+
+        # Combine child conditions with the connector
+        if not child_conditions:
+            raise ValueError("Q object has no valid conditions")
+
+        # Start with the first condition
+        combined = child_conditions[0]
+
+        # Combine remaining conditions
+        for condition in child_conditions[1:]:
+            if q.connector == "AND":
+                combined = combined & condition
+            elif q.connector == "OR":
+                combined = combined | condition
+            else:
+                raise ValueError(f"Unknown connector: {q.connector}")
+
+        # Apply negation if needed
+        if q.negated:
+            combined = ~combined
+
+        return combined
 
     def _build_condition(self, table, parsed: ParsedLookup):
         """Build a PyPika condition from a parsed lookup.
@@ -355,14 +555,41 @@ class ReadQuery(Generic[TDoc]):
                             # Apply the join and select the field
                             query = link_table_field.apply_select(query)
 
-        # Apply filters
+        # Apply Q-based filters
+        if self.filter_qs:
+            # Combine all filter Qs with AND
+            if len(self.filter_qs) == 1:
+                combined_q = self.filter_qs[0]
+            else:
+                # Combine multiple Qs with AND
+                combined_q = self.filter_qs[0]
+                for q in self.filter_qs[1:]:
+                    combined_q = combined_q & q
+            criterion = self._q_to_criterion(table, combined_q)
+            query = query.where(criterion)
+
+        # Apply legacy dict-based filters
         for filter_dict in self.filters:
             for key, value in filter_dict.items():
                 parsed = _parse_lookup(key, value)
                 condition = self._build_condition(table, parsed)
                 query = query.where(condition)
 
-        # Apply exclude filters (negated conditions)
+        # Apply Q-based exclude filters
+        if self.exclude_qs:
+            # Combine all exclude Qs with AND
+            if len(self.exclude_qs) == 1:
+                combined_q = self.exclude_qs[0]
+            else:
+                # Combine multiple Qs with AND
+                combined_q = self.exclude_qs[0]
+                for q in self.exclude_qs[1:]:
+                    combined_q = combined_q & q
+            criterion = self._q_to_criterion(table, combined_q)
+            # Negate the criterion
+            query = query.where(~criterion)
+
+        # Apply legacy dict-based exclude filters (negated conditions)
         for exclude_dict in self.exclude_filters:
             for key, value in exclude_dict.items():
                 parsed = _parse_lookup(key, value)
@@ -542,7 +769,7 @@ class ReadQuery(Generic[TDoc]):
         """
         try:
             import frappe
-            from frappe.database.query import Count
+            from frappe.query_builder.functions import Count
         except ImportError:
             raise ImportError(
                 "Frappe is required for query execution. "
@@ -555,14 +782,41 @@ class ReadQuery(Generic[TDoc]):
         # Build count query with same filters/excludes as the main query
         count_query = frappe.qb.from_(table).select(Count("*").as_("count"))
 
-        # Apply filters
+        # Apply Q-based filters
+        if self.filter_qs:
+            # Combine all filter Qs with AND
+            if len(self.filter_qs) == 1:
+                combined_q = self.filter_qs[0]
+            else:
+                # Combine multiple Qs with AND
+                combined_q = self.filter_qs[0]
+                for q in self.filter_qs[1:]:
+                    combined_q = combined_q & q
+            criterion = self._q_to_criterion(table, combined_q)
+            count_query = count_query.where(criterion)
+
+        # Apply legacy dict-based filters
         for filter_dict in self.filters:
             for key, value in filter_dict.items():
                 parsed = _parse_lookup(key, value)
                 condition = self._build_condition(table, parsed)
                 count_query = count_query.where(condition)
 
-        # Apply exclude filters (negated conditions)
+        # Apply Q-based exclude filters
+        if self.exclude_qs:
+            # Combine all exclude Qs with AND
+            if len(self.exclude_qs) == 1:
+                combined_q = self.exclude_qs[0]
+            else:
+                # Combine multiple Qs with AND
+                combined_q = self.exclude_qs[0]
+                for q in self.exclude_qs[1:]:
+                    combined_q = combined_q & q
+            criterion = self._q_to_criterion(table, combined_q)
+            # Negate the criterion
+            count_query = count_query.where(~criterion)
+
+        # Apply legacy dict-based exclude filters (negated conditions)
         for exclude_dict in self.exclude_filters:
             for key, value in exclude_dict.items():
                 parsed = _parse_lookup(key, value)
