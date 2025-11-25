@@ -9,6 +9,45 @@ import frappe
 from .state import _get_state, is_frappe_managed_transaction
 
 
+class Savepoint:
+    """Explicit savepoint context manager.
+
+    Can be used inside or outside Atomic as long as a database
+    transaction is active.
+    """
+
+    def __init__(self, name: str):
+        self.name = name
+        self._released = False
+
+    def __enter__(self) -> "Savepoint":
+        frappe.db.savepoint(self.name)
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool | None:
+        if exc_type is not None:
+            frappe.db.rollback(save_point=self.name)
+        elif not self._released:
+            release_savepoint = getattr(frappe.db, "release_savepoint", None)
+
+            if callable(release_savepoint):
+                release_savepoint(self.name)
+
+        return False
+
+    def rollback(self) -> None:
+        frappe.db.rollback(save_point=self.name)
+        self._released = True
+
+    def release(self) -> None:
+        release_savepoint = getattr(frappe.db, "release_savepoint", None)
+
+        if callable(release_savepoint):
+            release_savepoint(self.name)
+
+        self._released = True
+
+
 P = ParamSpec("P")
 R = TypeVar("R")
 
@@ -54,6 +93,13 @@ class Atomic(ContextDecorator):
         frappe.db.savepoint(name)
 
         return self
+
+    def savepoint(self) -> Savepoint:
+        """Return an explicit Savepoint context."""
+
+        state = _get_state()
+        name = _generate_savepoint_name(state.depth + 1)
+        return Savepoint(name)
 
     def __exit__(self, exc_type, exc, tb) -> bool | None:
         state = _get_state()
