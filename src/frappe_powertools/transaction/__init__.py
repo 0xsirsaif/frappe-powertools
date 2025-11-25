@@ -11,6 +11,7 @@ from .hooks import (
     on_rollback,
     rollback,
 )
+from .atomic import atomic
 
 __all__ = [
     "TransactionError",
@@ -22,4 +23,5 @@ __all__ = [
     "on_rollback",
     "commit",
     "rollback",
+    "atomic",
 ]

@@ -20,6 +20,7 @@ class TransactionState:
     depth: int = 0
     savepoints: List[str] = field(default_factory=list)
     owns_transaction: bool = False
+    error_rolled_back: bool = False
 
 
 def _get_state() -> TransactionState:
