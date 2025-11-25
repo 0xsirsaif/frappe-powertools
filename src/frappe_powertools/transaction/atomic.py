@@ -6,7 +6,7 @@ from typing import Optional, TypeVar, ParamSpec, overload
 
 import frappe
 
-from .state import _get_state
+from .state import _get_state, is_frappe_managed_transaction
 
 
 P = ParamSpec("P")
@@ -29,17 +29,22 @@ class Atomic(ContextDecorator):
     """
 
     def __init__(self, manage_transactions: bool = False):
-        if manage_transactions:
-            raise NotImplementedError(
-                "manage_transactions=True is not implemented yet. "
-                "Use Atomic() without manage_transactions or plain Frappe APIs."
-            )
-
         self.manage_transactions = manage_transactions
         self._savepoint_name: Optional[str] = None
 
     def __enter__(self) -> "Atomic":
         state = _get_state()
+
+        if self.manage_transactions:
+            if is_frappe_managed_transaction():
+                raise RuntimeError(
+                    "manage_transactions=True is not allowed in Frappe-managed contexts"
+                )
+
+            if state.depth == 0 and not state.owns_transaction:
+                frappe.db.begin()
+                state.owns_transaction = True
+
         state.depth += 1
 
         name = _generate_savepoint_name(state.depth)
@@ -76,6 +81,15 @@ class Atomic(ContextDecorator):
                 state.depth -= 1
 
             if state.depth == 0:
+                if self.manage_transactions and state.owns_transaction:
+                    try:
+                        if exc_type is None:
+                            frappe.db.commit()
+                        else:
+                            frappe.db.rollback()
+                    finally:
+                        state.owns_transaction = False
+
                 state.error_rolled_back = False
 
         return False
@@ -105,12 +119,6 @@ def atomic(func_or_none: Callable[P, R] | None = None, *, manage_transactions: b
         def handler(...):
             ...
     """
-
-    if manage_transactions:
-        raise NotImplementedError(
-            "atomic(manage_transactions=True) is not implemented yet. "
-            "Use manage_transactions=False for savepoint-based blocks."
-        )
 
     if func_or_none is None:
         return Atomic(manage_transactions=manage_transactions)

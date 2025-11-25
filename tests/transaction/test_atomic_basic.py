@@ -24,6 +24,8 @@ def _install_fake_db(monkeypatch):
         savepoint=savepoint_spy,
         rollback=lambda *args, **kwargs: rollback_spy(*args, **kwargs),
         release_savepoint=release_spy,
+        begin=Spy(),
+        commit=Spy(),
     )
 
     monkeypatch.setattr(frappe, "db", fake_db, raising=False)
@@ -89,7 +91,12 @@ def test_atomic_decorator_behaves_like_context_manager(monkeypatch):
     assert len(release_spy.calls) == 1
 
 
-def test_atomic_manage_transactions_true_not_implemented(monkeypatch):
+def test_atomic_manage_transactions_true_delegates_to_managed_mode(monkeypatch):
+    """Basic sanity check that manage_transactions=True is accepted in non-Frappe contexts.
+
+    Detailed behavior (BEGIN/COMMIT/ROLLBACK) is covered in test_atomic_managed.
+    """
+
     _install_fake_db(monkeypatch)
 
     try:
@@ -100,4 +107,4 @@ def test_atomic_manage_transactions_true_not_implemented(monkeypatch):
     else:
         raised = False
 
-    assert raised is True
+    assert raised is False
