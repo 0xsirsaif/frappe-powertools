@@ -188,7 +188,7 @@ def _build_model_descriptor(
         class_name=class_name,
         doctype=doctype,
         is_child=is_child,
-        docstring=f'Generated DocModel for {"child " if is_child else ""}DocType: {doctype}.',
+        docstring=f"Generated DocModel for {'child ' if is_child else ''}DocType: {doctype}.",
     )
 
     if child_class_names is None:

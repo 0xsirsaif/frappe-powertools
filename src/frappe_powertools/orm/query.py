@@ -320,18 +320,16 @@ class ReadQuery(Generic[TDoc]):
         if not q.children:
             raise ValueError("Cannot convert empty Q object to criterion")
 
-        # Optimize double negation: if we have a single child Q with opposite negated flag,
-        # unwrap it (this handles ~(~Q(...)) case)
+        # Optimize double negation: handle the specific ~(~Q(...)) pattern.
+        # In this case both the parent and the single child are negated, so
+        # the negations cancel out and we can unwrap to the inner Q.
         if len(q.children) == 1 and isinstance(q.children[0], Q):
             child_q = q.children[0]
-            # If parent and child have opposite negated flags, they cancel out
-            if q.negated != child_q.negated:
-                # Unwrap: process the child Q's children directly, preserving the child's connector
-                # This effectively removes one level of nesting when negations cancel
+            if q.negated and child_q.negated:
                 unwrapped_q = Q()
                 unwrapped_q.children = child_q.children
                 unwrapped_q.connector = child_q.connector
-                unwrapped_q.negated = False  # Negations have cancelled out
+                unwrapped_q.negated = False
                 return self._q_to_criterion(table, unwrapped_q)
 
         child_conditions = []

@@ -80,8 +80,9 @@ def test_prefetch_children_attaches_child_lists():
         object.__setattr__(parents[0], "items", [child1, child2])
         object.__setattr__(parents[1], "items", [child3])
 
-    with patch.object(query, "_build_frappe_query") as mock_build, patch.object(
-        query, "_prefetch_children", side_effect=mock_prefetch
+    with (
+        patch.object(query, "_build_frappe_query") as mock_build,
+        patch.object(query, "_prefetch_children", side_effect=mock_prefetch),
     ):
         # Mock parent query
         mock_parent_query = MagicMock()
@@ -119,8 +120,9 @@ def test_prefetch_children_empty_when_no_children():
     def mock_prefetch(parents):
         object.__setattr__(parents[0], "items", [])
 
-    with patch.object(query, "_build_frappe_query") as mock_build, patch.object(
-        query, "_prefetch_children", side_effect=mock_prefetch
+    with (
+        patch.object(query, "_build_frappe_query") as mock_build,
+        patch.object(query, "_prefetch_children", side_effect=mock_prefetch),
     ):
         # Mock parent query
         mock_parent_query = MagicMock()
@@ -145,8 +147,9 @@ def test_prefetch_children_ignores_unknown_fields():
     def mock_prefetch(parents):
         object.__setattr__(parents[0], "items", [])
 
-    with patch.object(query, "_build_frappe_query") as mock_build, patch.object(
-        query, "_prefetch_children", side_effect=mock_prefetch
+    with (
+        patch.object(query, "_build_frappe_query") as mock_build,
+        patch.object(query, "_prefetch_children", side_effect=mock_prefetch),
     ):
         # Mock parent query
         mock_parent_query = MagicMock()
@@ -213,8 +216,9 @@ def test_prefetch_children_handles_multiple_child_fields():
         object.__setattr__(parents[0], "items", [])
         object.__setattr__(parents[0], "notes", [])
 
-    with patch.object(query, "_build_frappe_query") as mock_build, patch.object(
-        query, "_prefetch_children", side_effect=mock_prefetch
+    with (
+        patch.object(query, "_build_frappe_query") as mock_build,
+        patch.object(query, "_prefetch_children", side_effect=mock_prefetch),
     ):
         mock_parent_query = MagicMock()
         mock_parent_query.run.return_value = parent_rows
@@ -281,8 +285,9 @@ def test_prefetch_children_orders_by_idx():
     def mock_prefetch(parents):
         object.__setattr__(parents[0], "items", [child1, child2])
 
-    with patch.object(query, "_build_frappe_query") as mock_build, patch.object(
-        query, "_prefetch_children", side_effect=mock_prefetch
+    with (
+        patch.object(query, "_build_frappe_query") as mock_build,
+        patch.object(query, "_prefetch_children", side_effect=mock_prefetch),
     ):
         mock_parent_query = MagicMock()
         mock_parent_query.run.return_value = parent_rows

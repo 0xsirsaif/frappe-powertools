@@ -295,8 +295,13 @@ def _handle_validation_error(err: ValidationError, config: Mapping[str, Any]) ->
         raise PydanticValidationError(message, err.errors())
 
     try:
-        import frappe
+        import frappe  # type: ignore[import-not-found]
     except ImportError:
         raise PydanticValidationError(message, err.errors())
 
-    frappe.throw(message, title=title)
+    throw = getattr(frappe, "throw", None)
+
+    if throw is None:
+        raise PydanticValidationError(message, err.errors())
+
+    throw(message, title=title)
