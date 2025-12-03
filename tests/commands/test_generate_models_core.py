@@ -36,7 +36,7 @@ def test_fieldtype_to_python_type():
     assert _fieldtype_to_python_type("Data") == "str | None"
     assert _fieldtype_to_python_type("Int") == "int | None"
     assert _fieldtype_to_python_type("Float") == "float | None"
-    assert _fieldtype_to_python_type("Currency") == "float | None"
+    assert _fieldtype_to_python_type("Currency") == "Decimal | None"  # Uses Decimal for precision
     assert _fieldtype_to_python_type("Check") == "bool"
     assert _fieldtype_to_python_type("Date") == "date | None"
     assert _fieldtype_to_python_type("Datetime") == "datetime | None"
@@ -44,6 +44,11 @@ def test_fieldtype_to_python_type():
     assert _fieldtype_to_python_type("Link") == "str | None"
     assert _fieldtype_to_python_type("Table") == "Any"
     assert _fieldtype_to_python_type("Unknown") == "Any"
+    # New types added
+    assert _fieldtype_to_python_type("Long Int") == "int | None"
+    assert _fieldtype_to_python_type("Duration") == "int | None"
+    assert _fieldtype_to_python_type("Rating") == "float | None"
+    assert _fieldtype_to_python_type("JSON") == "dict[str, Any] | None"
 
 
 def test_build_model_descriptor_basic_fieldtypes():
@@ -353,3 +358,222 @@ def test_with_links_false():
     field_names = {f.name for f in descriptor.fields}
     # Note: with_links=False means we don't infer links, but the field itself might still be added
     # This depends on implementation details
+
+
+def test_skip_display_fields():
+    """Test that display-only fields (Section Break, Column Break, etc.) are skipped."""
+    from frappe_powertools.commands.generate_models import SKIP_FIELDTYPES
+
+    @dataclass
+    class MockField:
+        fieldname: str
+        fieldtype: str
+        options: str = ""
+        reqd: bool = False
+        fetch_from: str = ""
+
+    @dataclass
+    class MockMeta:
+        name: str
+        istable: bool = False
+        fields: list[MockField] = None
+
+        def __post_init__(self):
+            if self.fields is None:
+                self.fields = []
+
+    fields = [
+        MockField("name", "Data", reqd=True),
+        MockField("section_1", "Section Break"),
+        MockField("title", "Data"),
+        MockField("column_1", "Column Break"),
+        MockField("description", "Text"),
+        MockField("tab_1", "Tab Break"),
+        MockField("status", "Select", options="Draft\nActive"),
+    ]
+
+    meta_info = {
+        "name": "Test DocType",
+        "meta": MockMeta("Test DocType", fields=fields),
+        "is_child": False,
+        "fields": fields,
+    }
+
+    descriptor = _build_model_descriptor(
+        "Test DocType", meta_info, with_children=True, with_links=True
+    )
+
+    field_names = {f.name for f in descriptor.fields}
+
+    # Data fields should be included
+    assert "name" in field_names
+    assert "title" in field_names
+    assert "description" in field_names
+    assert "status" in field_names
+
+    # Display fields should be skipped
+    assert "section_1" not in field_names
+    assert "column_1" not in field_names
+    assert "tab_1" not in field_names
+
+
+def test_select_field_literal_type():
+    """Test that Select fields generate Literal types from options."""
+    from frappe_powertools.commands.generate_models import _build_select_literal_type
+
+    # Basic options
+    type_str, options = _build_select_literal_type("Draft\nActive\nCancelled")
+    assert type_str == 'Literal["Draft", "Active", "Cancelled"] | None'
+    assert options == ["Draft", "Active", "Cancelled"]
+
+    # Empty options
+    type_str, options = _build_select_literal_type("")
+    assert type_str == "str | None"
+    assert options is None
+
+    # None options
+    type_str, options = _build_select_literal_type(None)
+    assert type_str == "str | None"
+    assert options is None
+
+    # Options with whitespace
+    type_str, options = _build_select_literal_type("  Draft  \n  Active  \n")
+    assert type_str == 'Literal["Draft", "Active"] | None'
+    assert options == ["Draft", "Active"]
+
+
+def test_select_field_in_descriptor():
+    """Test that Select fields in descriptors get Literal types."""
+
+    @dataclass
+    class MockField:
+        fieldname: str
+        fieldtype: str
+        options: str = ""
+        reqd: bool = False
+        fetch_from: str = ""
+
+    @dataclass
+    class MockMeta:
+        name: str
+        istable: bool = False
+        fields: list[MockField] = None
+
+        def __post_init__(self):
+            if self.fields is None:
+                self.fields = []
+
+    fields = [
+        MockField("name", "Data", reqd=True),
+        MockField("status", "Select", options="Draft\nActive\nCancelled"),
+    ]
+
+    meta_info = {
+        "name": "Test DocType",
+        "meta": MockMeta("Test DocType", fields=fields),
+        "is_child": False,
+        "fields": fields,
+    }
+
+    descriptor = _build_model_descriptor(
+        "Test DocType", meta_info, with_children=True, with_links=True
+    )
+
+    # Find the status field
+    status_field = next(f for f in descriptor.fields if f.name == "status")
+    assert 'Literal["Draft", "Active", "Cancelled"]' in status_field.python_type
+    assert status_field.select_options == ["Draft", "Active", "Cancelled"]
+
+
+def test_dynamic_link_tracking():
+    """Test that Dynamic Link fields track their type field relationship."""
+
+    @dataclass
+    class MockField:
+        fieldname: str
+        fieldtype: str
+        options: str = ""
+        reqd: bool = False
+        fetch_from: str = ""
+
+    @dataclass
+    class MockMeta:
+        name: str
+        istable: bool = False
+        fields: list[MockField] = None
+
+        def __post_init__(self):
+            if self.fields is None:
+                self.fields = []
+
+    fields = [
+        MockField("name", "Data", reqd=True),
+        MockField("reference_type", "Link", options="DocType"),
+        MockField("reference_name", "Dynamic Link", options="reference_type"),
+    ]
+
+    meta_info = {
+        "name": "Test DocType",
+        "meta": MockMeta("Test DocType", fields=fields),
+        "is_child": False,
+        "fields": fields,
+    }
+
+    descriptor = _build_model_descriptor(
+        "Test DocType", meta_info, with_children=True, with_links=True
+    )
+
+    # Check dynamic_links is populated
+    assert "reference_name" in descriptor.dynamic_links
+    assert descriptor.dynamic_links["reference_name"] == "reference_type"
+
+
+def test_required_fields_no_default():
+    """Test that required fields don't get default values."""
+
+    @dataclass
+    class MockField:
+        fieldname: str
+        fieldtype: str
+        options: str = ""
+        reqd: bool = False
+        fetch_from: str = ""
+
+    @dataclass
+    class MockMeta:
+        name: str
+        istable: bool = False
+        fields: list[MockField] = None
+
+        def __post_init__(self):
+            if self.fields is None:
+                self.fields = []
+
+    fields = [
+        MockField("name", "Data", reqd=True),
+        MockField("customer", "Link", options="Customer", reqd=True),
+        MockField("optional_field", "Data", reqd=False),
+    ]
+
+    meta_info = {
+        "name": "Test DocType",
+        "meta": MockMeta("Test DocType", fields=fields),
+        "is_child": False,
+        "fields": fields,
+    }
+
+    descriptor = _build_model_descriptor(
+        "Test DocType", meta_info, with_children=True, with_links=True
+    )
+
+    # Find the fields
+    customer_field = next(f for f in descriptor.fields if f.name == "customer")
+    optional_field = next(f for f in descriptor.fields if f.name == "optional_field")
+
+    # Required field should have no default
+    assert customer_field.is_required is True
+    assert customer_field.default_expr == ""
+
+    # Optional field should have default None
+    assert optional_field.is_required is False
+    assert optional_field.default_expr == "None"

@@ -19,6 +19,11 @@ class FieldDescriptor:
     python_type: str
     default_expr: str = ""
     is_required: bool = False
+    # Validation constraints
+    max_length: int | None = None
+    non_negative: bool = False
+    # For Select fields with Literal types
+    select_options: list[str] | None = None
 
 
 @dataclass
@@ -32,8 +37,48 @@ class ModelDescriptor:
     links: dict[str, tuple[str, str, str]] = field(
         default_factory=dict
     )  # local_field -> (link_field, target_doctype, target_field)
+    dynamic_links: dict[str, str] = field(default_factory=dict)  # fieldname -> type_field
+    multiselect_children: dict[str, str] = field(default_factory=dict)  # fieldname -> child_class
     is_child: bool = False
     docstring: str = ""
+
+
+# Display-only field types that don't store data (from frappe.model.display_fieldtypes)
+SKIP_FIELDTYPES = frozenset(
+    [
+        "Section Break",
+        "Column Break",
+        "Tab Break",
+        "HTML",
+        "Button",
+        "Image",
+        "Fold",
+        "Heading",
+    ]
+)
+
+# Field types that support length constraints
+TEXT_FIELDTYPES_WITH_LENGTH = frozenset(
+    [
+        "Data",
+        "Small Text",
+        "Password",
+        "Link",
+        "Phone",
+        "Autocomplete",
+    ]
+)
+
+# Numeric field types that can have non_negative constraint
+NUMERIC_FIELDTYPES = frozenset(
+    [
+        "Currency",
+        "Int",
+        "Long Int",
+        "Float",
+        "Percent",
+    ]
+)
 
 
 def _python_class_name_for(doctype: str) -> str:
@@ -107,33 +152,84 @@ def _fieldtype_to_python_type(fieldtype: str) -> str:
     """Map Frappe fieldtype to Python type string.
 
     Returns a type annotation string like "str | None" or "bool".
+    Uses Decimal for Currency (financial precision) by default.
     """
     mapping: dict[str, str] = {
+        # Text fields
         "Data": "str | None",
         "Small Text": "str | None",
         "Long Text": "str | None",
         "Text": "str | None",
         "Text Editor": "str | None",
+        "Markdown Editor": "str | None",
+        "HTML Editor": "str | None",
+        "Code": "str | None",
         "Read Only": "str | None",
+        "Phone": "str | None",
+        "Autocomplete": "str | None",
+        # Select - will be overridden with Literal if options available
         "Select": "str | None",
+        # Link fields
         "Link": "str | None",
         "Dynamic Link": "str | None",
+        # Numeric fields - use Decimal for Currency (financial precision)
         "Int": "int | None",
+        "Long Int": "int | None",
         "Float": "float | None",
-        "Currency": "float | None",
+        "Currency": "Decimal | None",
         "Percent": "float | None",
+        "Rating": "float | None",
+        # Boolean
         "Check": "bool",
+        # Date/Time fields
         "Date": "date | None",
         "Datetime": "datetime | None",
         "Time": "time | None",
+        "Duration": "int | None",  # Stored as seconds
+        # Attachment fields
         "Attach": "str | None",
         "Attach Image": "str | None",
-        "HTML": "str | None",
-        "Table": "Any",  # Handled separately
-        "Table MultiSelect": "Any",  # Handled separately
+        "Signature": "str | None",
+        # Special fields
+        "Color": "str | None",
+        "Icon": "str | None",
+        "Barcode": "str | None",
+        "Geolocation": "str | None",
+        "JSON": "dict[str, Any] | None",
+        "Password": "str | None",
+        # Table fields - handled separately
+        "Table": "Any",
+        "Table MultiSelect": "Any",
     }
 
     return mapping.get(fieldtype, "Any")
+
+
+def _build_select_literal_type(options: str | None) -> tuple[str, list[str] | None]:
+    """Build a Literal type from Select field options.
+
+    Args:
+        options: Newline-separated options string from the field
+
+    Returns:
+        Tuple of (type_string, option_list) where option_list is None if no valid options
+    """
+    if not options:
+        return "str | None", None
+
+    option_list = [opt.strip() for opt in options.split("\n") if opt.strip()]
+
+    if not option_list:
+        return "str | None", None
+
+    # Escape quotes in option values
+    escaped = []
+    for opt in option_list:
+        # Escape backslashes first, then double quotes
+        escaped_opt = opt.replace("\\", "\\\\").replace('"', '\\"')
+        escaped.append(f'"{escaped_opt}"')
+
+    return f"Literal[{', '.join(escaped)}] | None", option_list
 
 
 def _collect_doctype_meta(doctype: str) -> dict[str, Any]:
@@ -225,6 +321,10 @@ def _build_model_descriptor(
         fieldname = field_obj.fieldname
         fieldtype = field_obj.fieldtype
 
+        # Skip display-only fields that don't store data
+        if fieldtype in SKIP_FIELDTYPES:
+            continue
+
         # Skip if already processed or invalid identifier
         if fieldname in processed_fieldnames:
             continue
@@ -245,6 +345,22 @@ def _build_model_descriptor(
             # Don't add Table fields as regular fields
             continue
 
+        # Handle Table MultiSelect fields
+        if fieldtype == "Table MultiSelect" and with_children:
+            child_doctype = field_obj.options
+            if child_doctype:
+                child_class_name = child_class_names.get(
+                    child_doctype, _python_class_name_for(child_doctype)
+                )
+                descriptor.multiselect_children[fieldname] = child_class_name
+            continue
+
+        # Handle Dynamic Link fields - track the type field relationship
+        if fieldtype == "Dynamic Link":
+            type_field = field_obj.options  # The field that specifies the DocType
+            if type_field:
+                descriptor.dynamic_links[fieldname] = type_field
+
         # Handle Link fields - track for link projection inference
         if fieldtype == "Link":
             target_doctype = field_obj.options
@@ -253,18 +369,66 @@ def _build_model_descriptor(
 
         # Map fieldtype to Python type
         python_type = _fieldtype_to_python_type(fieldtype)
+        select_options: list[str] | None = None
+
+        # For Select fields, generate Literal type from options
+        if fieldtype == "Select":
+            options_str = getattr(field_obj, "options", None)
+            python_type, select_options = _build_select_literal_type(options_str)
+
+        # Extract validation constraints
+        max_length: int | None = None
+        non_negative: bool = False
+
+        # Length constraint (for text-like fields)
+        if fieldtype in TEXT_FIELDTYPES_WITH_LENGTH:
+            length = getattr(field_obj, "length", None)
+            if length and int(length) > 0:
+                max_length = int(length)
+
+        # Non-negative constraint (for numeric fields)
+        if fieldtype in NUMERIC_FIELDTYPES:
+            if getattr(field_obj, "non_negative", False):
+                non_negative = True
+
+        # Determine if field is required
+        is_required = bool(getattr(field_obj, "reqd", False))
 
         # Determine default value
         default_expr = ""
-        is_required = bool(field_obj.reqd)
+        frappe_default = getattr(field_obj, "default", None)
 
         if fieldtype == "Check":
-            default_expr = "False"
-        elif not is_required:
-            if python_type.endswith(" | None"):
-                default_expr = "None"
+            # Check fields: use Frappe default or False
+            if frappe_default in (1, "1", True):
+                default_expr = "True"
+            else:
+                default_expr = "False"
+        elif is_required:
+            # Required fields: no default (truly required)
+            default_expr = ""
+        elif frappe_default is not None and frappe_default != "":
+            # Has explicit Frappe default
+            if fieldtype in ("Int", "Long Int"):
+                try:
+                    default_expr = str(int(frappe_default))
+                except (ValueError, TypeError):
+                    default_expr = "None"
+            elif fieldtype in ("Float", "Currency", "Percent", "Rating"):
+                try:
+                    if fieldtype == "Currency":
+                        default_expr = f"Decimal('{frappe_default}')"
+                    else:
+                        default_expr = str(float(frappe_default))
+                except (ValueError, TypeError):
+                    default_expr = "None"
+            elif fieldtype == "Select" and select_options and frappe_default in select_options:
+                default_expr = f'"{frappe_default}"'
             else:
                 default_expr = "None"
+        else:
+            # Optional field without default
+            default_expr = "None"
 
         # Add field descriptor
         field_descriptors.append(
@@ -273,6 +437,9 @@ def _build_model_descriptor(
                 python_type=python_type,
                 default_expr=default_expr,
                 is_required=is_required,
+                max_length=max_length,
+                non_negative=non_negative,
+                select_options=select_options,
             )
         )
         processed_fieldnames.add(fieldname)
@@ -332,11 +499,40 @@ def _render_models(descriptors: list[ModelDescriptor]) -> str:
     """
     lines: list[str] = []
 
+    # Analyze what imports are needed
+    needs_decimal = False
+    needs_literal = False
+    needs_annotated = False
+
+    for desc in descriptors:
+        for field_desc in desc.fields:
+            if "Decimal" in field_desc.python_type:
+                needs_decimal = True
+            if "Literal[" in field_desc.python_type:
+                needs_literal = True
+            if field_desc.max_length is not None or field_desc.non_negative:
+                needs_annotated = True
+
     # Imports
     lines.append("from __future__ import annotations")
     lines.append("")
     lines.append("from datetime import date, datetime, time")
-    lines.append("from typing import Any")
+
+    if needs_decimal:
+        lines.append("from decimal import Decimal")
+
+    # Build typing imports
+    typing_imports = ["Any"]
+    if needs_annotated:
+        typing_imports.insert(0, "Annotated")
+    if needs_literal:
+        typing_imports.append("Literal")
+    lines.append(f"from typing import {', '.join(typing_imports)}")
+
+    if needs_annotated:
+        lines.append("")
+        lines.append("from pydantic import Field")
+
     lines.append("")
     lines.append("from frappe_powertools.orm import DocModel")
     lines.append("")
@@ -379,20 +575,88 @@ def _render_models(descriptors: list[ModelDescriptor]) -> str:
         else:
             lines.append("        links: dict[str, tuple[str, str, str]] = {}")
 
+        # Dynamic Links
+        if desc.dynamic_links:
+            dynamic_links_items = sorted(desc.dynamic_links.items())
+            lines.append("        dynamic_links: dict[str, str] = {")
+            for fieldname, type_field in dynamic_links_items:
+                lines.append(f'            "{fieldname}": "{type_field}",')
+            lines.append("        }")
+
+        # Multiselect Children
+        if desc.multiselect_children:
+            multiselect_items = sorted(desc.multiselect_children.items())
+            lines.append("        multiselect: dict[str, type[DocModel]] = {")
+            for fieldname, child_class in multiselect_items:
+                lines.append(f'            "{fieldname}": {child_class},')
+            lines.append("        }")
+
         lines.append("")
 
-        # Fields
+        # Fields - render with proper constraints
         for field_desc in desc.fields:
-            field_line = f"    {field_desc.name}: {field_desc.python_type}"
-            if field_desc.default_expr:
-                field_line += f" = {field_desc.default_expr}"
+            field_line = _render_field(field_desc)
             lines.append(field_line)
 
         # Always include extras
         if "extras" not in [f.name for f in desc.fields]:
             lines.append("    extras: dict[str, Any] = {}")
 
+    # Add model_rebuild() calls for forward reference resolution
+    lines.append("")
+    lines.append("")
+    lines.append("# Rebuild models to resolve forward references")
+    for desc in descriptors:
+        lines.append(f"{desc.class_name}.model_rebuild()")
+
     return "\n".join(lines)
+
+
+def _render_field(field_desc: FieldDescriptor) -> str:
+    """Render a single field with proper type annotations and constraints.
+
+    Args:
+        field_desc: The field descriptor to render
+
+    Returns:
+        A single line of Python code for the field
+    """
+    has_constraints = field_desc.max_length is not None or field_desc.non_negative
+
+    if has_constraints:
+        # Build Field() constraints
+        constraints = []
+        if field_desc.max_length is not None:
+            constraints.append(f"max_length={field_desc.max_length}")
+        if field_desc.non_negative:
+            constraints.append("ge=0")
+
+        field_call = f"Field({', '.join(constraints)})"
+
+        # Extract base type (remove " | None" for Annotated wrapping)
+        base_type = field_desc.python_type
+        is_optional = base_type.endswith(" | None")
+        if is_optional:
+            base_type = base_type[:-7]  # Remove " | None"
+
+        if field_desc.is_required:
+            # Required with constraints: Annotated[type, Field(...)]
+            annotated_type = f"Annotated[{base_type}, {field_call}]"
+            return f"    {field_desc.name}: {annotated_type}"
+        else:
+            # Optional with constraints: Annotated[type, Field(...)] | None = default
+            annotated_type = f"Annotated[{base_type}, {field_call}] | None"
+            default = field_desc.default_expr or "None"
+            return f"    {field_desc.name}: {annotated_type} = {default}"
+    else:
+        # No constraints - simple type annotation
+        if field_desc.is_required:
+            # Required field: no default
+            return f"    {field_desc.name}: {field_desc.python_type.replace(' | None', '')}"
+        else:
+            # Optional field with default
+            default = field_desc.default_expr or "None"
+            return f"    {field_desc.name}: {field_desc.python_type} = {default}"
 
 
 def generate_docmodels(
